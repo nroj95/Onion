@@ -73,8 +73,9 @@ main() {
 # Standard check from runtime for startup.
 check() {
     log "Network Checker: Update networking"
-    local force_wifi_on_startup=$([ -f /customer/app/axp_test ] && [ -f $sysdir/config/.ntpForce ] && echo 1 || echo 0)
+    local force_wifi_on_startup=$([ -f /customer/app/axp_test ] && [ -f "$sysdir/config/.ntpForce" ] && echo 1 || echo 0)
     local has_wifi=$(wifi_enabled && echo 1 || echo 0)
+    local temporary_wifi_enabled=0
 
     check_wifi
     check_ftpstate &
@@ -89,6 +90,7 @@ check() {
                 bootScreen Boot "Turning on Wi-Fi..."
                 wifi_on
                 has_wifi=1
+                temporary_wifi_enabled=1
             fi
         else
             bootScreen Boot "Waiting for network..."
@@ -111,7 +113,7 @@ check() {
         $sysdir/script/ota_update.sh check &
     fi
 
-    if [ "$is_booting" -eq 1 ] && [ "$force_wifi_on_startup" -eq 1 ] && wifi_disabled; then
+    if [ "$temporary_wifi_enabled" -eq 1 ]; then
         bootScreen Boot "Turning off Wi-Fi..."
         wifi_off
     fi
@@ -480,41 +482,38 @@ check_ntpstate() {
         max_attempts=3
         ret_val=1
         got_ip=0
-        # wait for an ip address from dhcp before we start
+
+        # wait for an ip address from dhcp before starting network lookups
         while true; do
             ip=$(ifconfig wlan0 | grep 'inet addr:' | cut -d: -f2 | cut -d' ' -f1)
             if [ -z "$ip" ]; then
                 attempts=$((attempts + 1))
                 log "NTPwait: Waiting for IP address since $attempts seconds"
-                if [ $attempts -ge $max_wait_ip ]; then
-                    log "NTPwait: Could not aquire an IP address"
-                    ret_val=1
-                    got_ip=0
+                if [ "$attempts" -ge "$max_wait_ip" ]; then
+                    log "NTPwait: Could not acquire an IP address"
                     break
                 fi
             else
-                log "NTPwait: IP address aquired: $ip"
+                log "NTPwait: IP address acquired: $ip"
                 got_ip=1
                 break
             fi
             sleep 1
         done
+
         attempts=0
         if [ "$got_ip" -eq 1 ]; then
             while true; do
-                log "NTPwait: get_time attempt $attempts"
-                if ping -q -c 1 -W 1 worldtimeapi.org > /dev/null 2>&1; then
-                    if get_time; then
-                        ret_val=0
-                        break
-                    fi
-                else
-                    log "NTPwait: Can't reach network."
-                fi
                 attempts=$((attempts + 1))
-                if [ $attempts -eq $max_attempts ]; then
+                log "NTPwait: get_time attempt $attempts"
+
+                if get_time; then
+                    ret_val=0
+                    break
+                fi
+
+                if [ "$attempts" -ge "$max_attempts" ]; then
                     log "NTPwait: Ran out of time before we could sync, stopping."
-                    ret_val=1
                     touch /tmp/ntp_failed
                     break
                 fi
@@ -525,56 +524,67 @@ check_ntpstate() {
     return "$ret_val"
 }
 
-get_time() { # handles 2 types of network time, instant from an API or longer from an NTP server, if the instant API checks fails it will fallback to the longer ntp
-    log "NTP: started time update"
+# Synchronize the timezone and clock using independent providers.
+get_time() {
+    log "NTP: Started time update"
 
-    response=$(curl -s -m 3 http://worldtimeapi.org/api/ip.txt)
-    utc_datetime=$(echo "$response" | grep -o 'utc_datetime: [^.]*' | cut -d ' ' -f2 | sed "s/T/ /")
-    if ! flag_enabled "manual_tz"; then
-        utc_offset="UTC$(echo "$response" | grep -o 'utc_offset: [^.]*' | cut -d ' ' -f2)"
-    fi
+    utc_offset=""
 
-    if [ -z "$utc_datetime" ]; then
-        log "NTP: Failed to get time from worldtimeapi.org, trying timeapi.io"
-        utc_datetime=$(curl -s -k -m 5 https://timeapi.io/api/Time/current/zone?timeZone=UTC | grep -o '"dateTime":"[^.]*' | cut -d '"' -f4 | sed 's/T/ /')
-        if ! flag_enabled "manual_tz"; then
-            ip_address=$(curl -s -k -m 5 https://api.ipify.org)
-            utc_offset_seconds=$(curl -s -k -m 5 https://timeapi.io/api/TimeZone/ip?ipAddress=$ip_address | jq '.currentUtcOffset.seconds')
-            utc_offset="$(convert_seconds_to_utc_offset $utc_offset_seconds)"
+    if ! flag_enabled manual_tz; then
+        timezone_response=$(curl -fs -m 3 \
+            'http://ip-api.com/json/?fields=status,offset')
+        timezone_status=$(printf '%s\n' "$timezone_response" |
+            jq -r '.status // empty' 2>/dev/null)
+
+        if [ "$timezone_status" = "success" ]; then
+            utc_offset_seconds=$(printf '%s\n' "$timezone_response" |
+                jq -r '.offset // empty' 2>/dev/null)
+
+            if [ -n "$utc_offset_seconds" ] &&
+                utc_offset=$(convert_seconds_to_utc_offset "$utc_offset_seconds"); then
+                log "NTP: Timezone acquired using ip-api.com"
+            else
+                utc_offset=""
+            fi
         fi
-    fi
 
-    if [ -n "$utc_datetime" ]; then
-        playActivity stop_all
+        if [ -z "$utc_offset" ]; then
+            log "NTP: Automatic timezone lookup failed, keeping existing timezone"
+        fi
 
         if [ -n "$utc_offset" ]; then
-            echo "$utc_offset" | sed 's/\+/_/' | sed 's/-/+/' | sed 's/_/-/' > $sysdir/config/.tz
-            cp $sysdir/config/.tz $sysdir/config/.tz_sync
-            sync
-            set_tzid
+            if save_timezone_offset "$utc_offset"; then
+                set_tzid
+            else
+                log "NTP: Failed to save timezone, keeping existing timezone"
+            fi
         fi
-
-        if date -u -s "$utc_datetime" > /dev/null 2>&1; then
-            hwclock -w
-            log "NTP: Time successfully aquired using API"
-            touch /tmp/ntp_synced
-            playActivity resume
-            return 0
-        fi
-
-        playActivity resume
     fi
 
-    log "NTP: Failed to get time via timeapi.io as well, falling back to NTP."
-    rm $sysdir/config/.tz_sync 2> /dev/null
+    playActivity stop_all
 
-    ntpdate -t 3 -u time.google.com
-    if [ $? -eq 0 ]; then
-        log "NTP: Time successfully aquired using NTP"
+    if ntpdate -t 3 -u time.google.com; then
+        complete_time_sync "NTP"
         return 0
     fi
 
-    log "NTP: Failed to synchronize time using NTPdate, both methods have failed."
+    log "NTP: NTP failed, trying timeapi.io timestamp"
+
+    timeapi_response=$(curl -fs -k -m 5 \
+        'https://timeapi.io/api/Time/current/zone?timeZone=UTC')
+    timeapi_utc_datetime=$(printf '%s\n' "$timeapi_response" |
+        jq -r '.dateTime // empty' 2>/dev/null |
+        cut -d. -f1 |
+        sed 's/T/ /')
+
+    if [ -n "$timeapi_utc_datetime" ] &&
+        date -u -s "$timeapi_utc_datetime" > /dev/null 2>&1; then
+        complete_time_sync "timeapi.io"
+        return 0
+    fi
+
+    playActivity resume
+    log "NTP: Failed to synchronize time"
     return 1
 }
 
@@ -659,23 +669,71 @@ full_reset() {
 }
 
 convert_seconds_to_utc_offset() {
-    seconds=$(($1))
-    if [ $seconds -ne 0 ]; then
-        printf "UTC%s%02d%s" \
-            $([[ $seconds -lt 0 ]] && echo -n "-" || echo -n "+") \
-            $(abs $(($seconds / 3600))) \
-            $([[ $(($seconds % 3600)) -eq 0 ]] && echo -n ":00" || echo -n ":30")
-    else
-        echo -n "UTC"
+    offset_seconds=$1
+    absolute_seconds=${offset_seconds#-}
+
+    case "$absolute_seconds" in
+        '' | *[!0-9]*)
+            return 1
+            ;;
+    esac
+
+    if [ "$offset_seconds" -eq 0 ]; then
+        printf 'UTC'
+        return 0
     fi
+
+    if [ "$offset_seconds" -lt 0 ]; then
+        sign="-"
+        absolute_seconds=$((-offset_seconds))
+    else
+        sign="+"
+    fi
+
+    # utc offsets are minute-aligned; reject malformed provider data.
+    [ $((absolute_seconds % 60)) -eq 0 ] || return 1
+
+    hours=$((absolute_seconds / 3600))
+    minutes=$(((absolute_seconds % 3600) / 60))
+    printf 'UTC%s%02d:%02d' "$sign" "$hours" "$minutes"
 }
 
-abs() {
-    [[ $(($@)) -lt 0 ]] && echo "$((($@) * -1))" || echo "$(($@))"
+save_timezone_offset() {
+    utc_offset=$1
+
+    # posix tz signs are intentionally opposite to ordinary utc offsets.
+    case "$utc_offset" in
+        UTC)
+            posix_timezone="UTC"
+            ;;
+        UTC+*)
+            posix_timezone="UTC-${utc_offset#UTC+}"
+            ;;
+        UTC-*)
+            posix_timezone="UTC+${utc_offset#UTC-}"
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+
+    printf '%s\n' "$posix_timezone" > "$sysdir/config/.tz" || return 1
+    cp "$sysdir/config/.tz" "$sysdir/config/.tz_sync" || return 1
+    sync
+}
+
+complete_time_sync() {
+    time_source=$1
+    hwclock -w
+    touch /tmp/ntp_synced
+    playActivity resume
+    log "NTP: Time successfully acquired using $time_source"
 }
 
 set_tzid() {
-    export TZ=$(cat "$sysdir/config/.tz")
+    [ -s "$sysdir/config/.tz" ] || return 1
+    TZ=$(cat "$sysdir/config/.tz")
+    export TZ
 }
 
 is_noauth_enabled() { # Used to check authMethod val for HTTPFS
