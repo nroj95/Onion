@@ -6,11 +6,13 @@
 #include <string.h>
 #include <unistd.h>
 
+#include "components/JsonGameEntry.h"
 #include "components/list.h"
 #include "utils/file.h"
 #include "utils/json.h"
 
 #include "./appstate.h"
+#include "./info_dialog.h"
 
 #define FAVOURITES_MANAGER_CONFIG_DIR \
     "/mnt/SDCARD/Saves/CurrentProfile/config/favourites-manager"
@@ -219,6 +221,8 @@ static void action_favouritesManagerRunOnStartup(void *pointer)
         ((ListItem *)pointer)->value == 1;
     favourites_manager_saveSettings();
 }
+
+#include "./favourites_manager_engine.h"
 
 static void action_favouritesManagerReset(void *pointer)
 {

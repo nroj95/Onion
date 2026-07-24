@@ -574,7 +574,7 @@ void menu_favouritesManager(void *_)
 
     if (!_menu_favourites_manager._created) {
         _menu_favourites_manager =
-            list_createWithTitle(8, LIST_SMALL, "Favourites manager");
+            list_createWithTitle(9, LIST_SMALL, "Favorites manager");
 
         list_addItemWithInfoNote(
             &_menu_favourites_manager,
@@ -641,10 +641,18 @@ void menu_favouritesManager(void *_)
         list_addItemWithInfoNote(
             &_menu_favourites_manager,
             (ListItem){
+                .label = "Preview changes",
+                .action = action_favouritesManagerPreview},
+            "Read and analyse favourite.json without\n"
+            "changing it.");
+
+        list_addItemWithInfoNote(
+            &_menu_favourites_manager,
+            (ListItem){
                 .label = "Apply changes",
-                .disabled = true},
-            "The favourites transformation pipeline\n"
-            "will be added next.");
+                .action = action_favouritesManagerApply},
+            "Apply the selected sorting and cleanup\n"
+            "rules to favourite.json.");
 
         list_addItemWithInfoNote(
             &_menu_favourites_manager,
@@ -707,7 +715,7 @@ void menu_userInterface(void *_)
                          .action = menu_icons});
         list_addItem(&_menu_user_interface,
                      (ListItem){
-                         .label = "Favourites manager...",
+                         .label = "Favorites manager...",
                          .action = menu_favouritesManager});
     }
     menu_stack[++menu_level] = &_menu_user_interface;
