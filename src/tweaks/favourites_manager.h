@@ -35,7 +35,15 @@ typedef enum favourites_inner_sort_e {
 typedef enum favourites_system_order_e {
     FAVOURITES_SYSTEM_ORDER_KEEP_CURRENT = 0,
     FAVOURITES_SYSTEM_ORDER_ALPHABETICAL = 1,
+    FAVOURITES_SYSTEM_ORDER_CUSTOM = 2,
 } FavouritesSystemOrder;
+
+#define FAVOURITES_MAX_SYSTEMS 256
+
+static char favourites_custom_system_order
+    [FAVOURITES_MAX_SYSTEMS][STR_MAX];
+
+static int favourites_custom_system_count = 0;
 
 typedef struct favourites_manager_settings_s {
     int sort_mode;
@@ -90,8 +98,32 @@ static bool favourites_manager_saveSettings(void)
         root, "run_on_startup",
         favourites_manager_settings.run_on_startup);
 
-    // Reserved for the optional custom system-order editor.
-    cJSON_AddArrayToObject(root, "custom_system_order");
+    cJSON *custom_system_order =
+        cJSON_AddArrayToObject(
+            root,
+            "custom_system_order");
+
+    if (custom_system_order == NULL) {
+        cJSON_Delete(root);
+        return false;
+    }
+
+    for (int i = 0;
+         i < favourites_custom_system_count;
+         i++) {
+        cJSON *system =
+            cJSON_CreateString(
+                favourites_custom_system_order[i]);
+
+        if (system == NULL) {
+            cJSON_Delete(root);
+            return false;
+        }
+
+        cJSON_AddItemToArray(
+            custom_system_order,
+            system);
+    }
 
     char *output = cJSON_Print(root);
     cJSON_Delete(root);
@@ -177,6 +209,41 @@ static void favourites_manager_loadSettings(void)
         }
     }
 
+    favourites_custom_system_count = 0;
+
+    cJSON *custom_system_order =
+        cJSON_GetObjectItemCaseSensitive(
+            root,
+            "custom_system_order");
+
+    if (cJSON_IsArray(custom_system_order)) {
+        cJSON *system = NULL;
+
+        cJSON_ArrayForEach(
+            system,
+            custom_system_order) {
+            if (!cJSON_IsString(system) ||
+                system->valuestring == NULL ||
+                system->valuestring[0] == '\0' ||
+                favourites_custom_system_count >=
+                    FAVOURITES_MAX_SYSTEMS) {
+                continue;
+            }
+
+            strncpy(
+                favourites_custom_system_order[
+                    favourites_custom_system_count],
+                system->valuestring,
+                STR_MAX - 1);
+
+            favourites_custom_system_order[
+                favourites_custom_system_count]
+                [STR_MAX - 1] = '\0';
+
+            favourites_custom_system_count++;
+        }
+    }
+
     json_getBool(
         root, "remove_duplicates",
         &favourites_manager_settings.remove_duplicates);
@@ -207,7 +274,7 @@ static void favourites_manager_loadSettings(void)
     if (favourites_manager_settings.system_order <
             FAVOURITES_SYSTEM_ORDER_KEEP_CURRENT ||
         favourites_manager_settings.system_order >
-            FAVOURITES_SYSTEM_ORDER_ALPHABETICAL) {
+            FAVOURITES_SYSTEM_ORDER_CUSTOM) {
         favourites_manager_settings.system_order =
             FAVOURITES_SYSTEM_ORDER_ALPHABETICAL;
     }

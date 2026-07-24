@@ -568,23 +568,164 @@ void menu_blueLight(void *_)
     header_changed = true;
 }
 
+static void formatter_favouritesManagerSystemMove(
+    void *pointer,
+    char *out_label)
+{
+    (void)pointer;
+    strcpy(out_label, " ");
+}
+
+static void action_favouritesManagerMoveSystem(
+    void *pointer)
+{
+    ListItem *item = (ListItem *)pointer;
+    int position = item->_id;
+    int direction = item->value < 1 ? -1 : 1;
+    int destination = position + direction;
+
+    item->value = 1;
+
+    if (destination < 0 ||
+        destination >=
+            _menu_favourites_manager_system_order.item_count) {
+        return;
+    }
+
+    ListItem *other =
+        &_menu_favourites_manager_system_order
+             .items[destination];
+
+    char label[STR_MAX];
+    char payload[STR_MAX];
+
+    strcpy(label, item->label);
+    strcpy(payload, item->payload);
+
+    strcpy(item->label, other->label);
+    strcpy(item->payload, other->payload);
+
+    strcpy(other->label, label);
+    strcpy(other->payload, payload);
+
+    _menu_favourites_manager_system_order.active_pos =
+        destination;
+
+    list_scroll(
+        &_menu_favourites_manager_system_order);
+
+    favourites_custom_system_count =
+        _menu_favourites_manager_system_order.item_count;
+
+    for (int i = 0;
+         i < favourites_custom_system_count;
+         i++) {
+        strncpy(
+            favourites_custom_system_order[i],
+            _menu_favourites_manager_system_order
+                .items[i]
+                .payload,
+            STR_MAX - 1);
+
+        favourites_custom_system_order[i]
+            [STR_MAX - 1] = '\0';
+    }
+
+    favourites_manager_settings.system_order =
+        FAVOURITES_SYSTEM_ORDER_CUSTOM;
+
+    favourites_manager_saveSettings();
+
+    reset_menus = true;
+    all_changed = true;
+}
+
+void menu_favouritesManagerSystemOrder(void *_)
+{
+    char systems[FAVOURITES_MAX_SYSTEMS][STR_MAX];
+    int system_count =
+        favourites_get_systems(systems);
+
+    if (system_count < 0) {
+        __showInfoDialog(
+            "Custom system order",
+            "Could not read the favorites list.");
+        return;
+    }
+
+    if (system_count == 0) {
+        __showInfoDialog(
+            "Custom system order",
+            "No favorite systems are available.");
+        return;
+    }
+
+    list_free(
+        &_menu_favourites_manager_system_order);
+
+    _menu_favourites_manager_system_order =
+        list_createWithTitle(
+            system_count,
+            LIST_SMALL,
+            "Custom system order");
+
+    for (int i = 0;
+         i < system_count;
+         i++) {
+        ListItem *item =
+            list_addItemWithInfoNote(
+                &_menu_favourites_manager_system_order,
+                (ListItem){
+                    .label = "",
+                    .payload = "",
+                    .item_type = MULTIVALUE,
+                    .value = 1,
+                    .value_min = 0,
+                    .value_max = 2,
+                    .value_formatter =
+                        formatter_favouritesManagerSystemMove,
+                    .disable_a_btn = true,
+                    .alternative_arrow_action = true,
+                    .arrow_action =
+                        action_favouritesManagerMoveSystem,
+                },
+                "Use left and right to move this system.");
+
+        strncpy(
+            item->label,
+            systems[i],
+            STR_MAX - 1);
+
+        strncpy(
+            item->payload,
+            systems[i],
+            STR_MAX - 1);
+    }
+
+    menu_stack[++menu_level] =
+        &_menu_favourites_manager_system_order;
+
+    header_changed = true;
+}
+
 void menu_favouritesManagerAdvanced(void *_)
 {
     favourites_manager_ensureSettingsLoaded();
 
     if (!_menu_favourites_manager_advanced._created) {
         _menu_favourites_manager_advanced =
-            list_createWithTitle(6, LIST_SMALL, "Advanced");
+            list_createWithTitle(7, LIST_SMALL, "Advanced");
 
         list_addItemWithInfoNote(
             &_menu_favourites_manager_advanced,
             (ListItem){
                 .label = "System order",
                 .item_type = MULTIVALUE,
-                .value_max = 1,
+                .value_max = 2,
                 .value_labels = {
                     "Keep current",
                     "Alphabetical",
+                    "Custom",
                 },
                 .value =
                     favourites_manager_settings.system_order,
@@ -592,6 +733,14 @@ void menu_favouritesManagerAdvanced(void *_)
                     action_favouritesManagerSystemOrder},
             "Choose how system groups are ordered.\n"
             "Games remain alphabetical inside them.");
+
+        list_addItemWithInfoNote(
+            &_menu_favourites_manager_advanced,
+            (ListItem){
+                .label = "Edit system order...",
+                .action = menu_favouritesManagerSystemOrder},
+            "Arrange systems with left and right.\n"
+            "The custom order saves immediately.");
 
         list_addItemWithInfoNote(
             &_menu_favourites_manager_advanced,

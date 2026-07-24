@@ -67,6 +67,7 @@ static List _menu_button_action_ingame_menu;
 static List _menu_user_interface;
 static List _menu_favourites_manager;
 static List _menu_favourites_manager_advanced;
+static List _menu_favourites_manager_system_order;
 static List _menu_theme_overrides;
 static List _menu_battery_percentage;
 static List _menu_advanced;
@@ -90,6 +91,7 @@ void menu_free_all(void)
     list_free(&_menu_user_interface);
     list_free(&_menu_favourites_manager);
     list_free(&_menu_favourites_manager_advanced);
+    list_free(&_menu_favourites_manager_system_order);
     list_free(&_menu_theme_overrides);
     list_free(&_menu_battery_percentage);
     list_free(&_menu_advanced);

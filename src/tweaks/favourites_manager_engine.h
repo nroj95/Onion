@@ -45,8 +45,6 @@ typedef struct favourites_collection_s {
     int capacity;
 } FavouritesCollection;
 
-#define FAVOURITES_MAX_SYSTEMS 256
-
 static int favourites_sort_mode_active =
     FAVOURITES_SORT_ALPHABETICAL;
 
@@ -347,6 +345,22 @@ static bool favourites_repair_image_path(
         image_path);
 }
 
+static int favourites_find_custom_system_order(
+    const char *system)
+{
+    for (int i = 0;
+         i < favourites_custom_system_count;
+         i++) {
+        if (strcasecmp(
+                favourites_custom_system_order[i],
+                system) == 0) {
+            return i;
+        }
+    }
+
+    return FAVOURITES_MAX_SYSTEMS;
+}
+
 static int favourites_find_system_order(
     const char *system)
 {
@@ -426,6 +440,19 @@ static int favourites_compare_entries(
 
             int right_order =
                 favourites_find_system_order(
+                    right->system);
+
+            if (left_order != right_order)
+                return left_order - right_order;
+        }
+        else if (favourites_system_order_active ==
+                 FAVOURITES_SYSTEM_ORDER_CUSTOM) {
+            int left_order =
+                favourites_find_custom_system_order(
+                    left->system);
+
+            int right_order =
+                favourites_find_custom_system_order(
                     right->system);
 
             if (left_order != right_order)
@@ -522,6 +549,96 @@ static void favourites_apply_rules(
         if (collection->entries[i].keep)
             result->kept++;
     }
+}
+
+static int favourites_get_systems(
+    char systems[FAVOURITES_MAX_SYSTEMS][STR_MAX])
+{
+    FavouritesCollection collection;
+    FavouritesResult result;
+
+    if (!favourites_read(
+            &collection,
+            &result)) {
+        return -1;
+    }
+
+    int system_count = 0;
+
+    for (int i = 0;
+         i < collection.count &&
+         system_count < FAVOURITES_MAX_SYSTEMS;
+         i++) {
+        FavouritesEntry *entry =
+            &collection.entries[i];
+
+        if (!entry->rom_backed ||
+            entry->system[0] == '\0') {
+            continue;
+        }
+
+        bool exists_in_list = false;
+
+        for (int j = 0;
+             j < system_count;
+             j++) {
+            if (strcasecmp(
+                    systems[j],
+                    entry->system) == 0) {
+                exists_in_list = true;
+                break;
+            }
+        }
+
+        if (exists_in_list)
+            continue;
+
+        strncpy(
+            systems[system_count],
+            entry->system,
+            STR_MAX - 1);
+
+        systems[system_count][STR_MAX - 1] =
+            '\0';
+
+        system_count++;
+    }
+
+    favourites_collection_free(&collection);
+
+    for (int i = 0;
+         i < system_count - 1;
+         i++) {
+        for (int j = i + 1;
+             j < system_count;
+             j++) {
+            int left_order =
+                favourites_find_custom_system_order(
+                    systems[i]);
+
+            int right_order =
+                favourites_find_custom_system_order(
+                    systems[j]);
+
+            bool swap =
+                left_order > right_order ||
+                (left_order == right_order &&
+                 strcasecmp(
+                     systems[i],
+                     systems[j]) > 0);
+
+            if (!swap)
+                continue;
+
+            char temporary[STR_MAX];
+
+            strcpy(temporary, systems[i]);
+            strcpy(systems[i], systems[j]);
+            strcpy(systems[j], temporary);
+        }
+    }
+
+    return system_count;
 }
 
 static bool favourites_write(
