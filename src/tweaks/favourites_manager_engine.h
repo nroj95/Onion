@@ -156,6 +156,194 @@ static bool favourites_is_duplicate(
     return false;
 }
 
+typedef struct favourites_system_label_s {
+    const char *system;
+    const char *label;
+} FavouritesSystemLabel;
+
+static const FavouritesSystemLabel favourites_system_labels[] = {
+    {"ARCADE", "arcade"},
+    {"ATARI", "a2600"},
+    {"COLECO", "coleco"},
+    {"CPC", "cpc"},
+    {"CPS1", "cps1"},
+    {"CPS2", "cps2"},
+    {"CPS3", "cps3"},
+    {"FAIRCHILD", "chf"},
+    {"FC", "nes"},
+    {"FDS", "fds"},
+    {"GB", "gb"},
+    {"GBA", "gba"},
+    {"GBC", "gbc"},
+    {"GG", "gg"},
+    {"INTELLIVISION", "intv"},
+    {"LYNX", "lynx"},
+    {"MD", "md"},
+    {"MEGADUCK", "megaduck"},
+    {"MS", "sms"},
+    {"MSX", "msx"},
+    {"NDS", "nds"},
+    {"NEOCD", "neocd"},
+    {"NEOGEO", "neogeo"},
+    {"NGP", "ngp"},
+    {"ODYSSEY", "odyssey"},
+    {"PCE", "pce"},
+    {"PCECD", "pcecd"},
+    {"PICO", "pico8"},
+    {"POKE", "poke"},
+    {"PORTS", "ports"},
+    {"PS", "ps1"},
+    {"SATELLAVIEW", "bsx"},
+    {"SEGACD", "segacd"},
+    {"SEGASGONE", "sg1000"},
+    {"SEVENTYEIGHTHUNDRED", "a7800"},
+    {"SFC", "snes"},
+    {"SUPERVISION", "supervision"},
+    {"THIRTYTWOX", "32x"},
+    {"VB", "vb"},
+    {"VECTREX", "vectrex"},
+    {"WS", "ws"},
+};
+
+static const char *favourites_get_system_label(
+    const char *system)
+{
+    size_t label_count =
+        sizeof(favourites_system_labels) /
+        sizeof(favourites_system_labels[0]);
+
+    for (size_t i = 0; i < label_count; i++) {
+        if (strcasecmp(
+                system,
+                favourites_system_labels[i].system) == 0) {
+            return favourites_system_labels[i].label;
+        }
+    }
+
+    return NULL;
+}
+
+static bool favourites_strip_one_system_prefix(
+    char *label)
+{
+    size_t label_count =
+        sizeof(favourites_system_labels) /
+        sizeof(favourites_system_labels[0]);
+
+    for (size_t i = 0; i < label_count; i++) {
+        char prefix[STR_MAX];
+
+        int prefix_length =
+            snprintf(
+                prefix,
+                sizeof(prefix),
+                "[%s]",
+                favourites_system_labels[i].label);
+
+        if (prefix_length <= 0 ||
+            (size_t)prefix_length >= sizeof(prefix)) {
+            continue;
+        }
+
+        if (strncasecmp(
+                label,
+                prefix,
+                (size_t)prefix_length) != 0) {
+            continue;
+        }
+
+        size_t remove_length =
+            (size_t)prefix_length;
+
+        while (label[remove_length] != '\0' &&
+               isspace(
+                   (unsigned char)
+                       label[remove_length])) {
+            remove_length++;
+        }
+
+        size_t label_length = strlen(label);
+
+        memmove(
+            label,
+            label + remove_length,
+            label_length - remove_length + 1);
+
+        return true;
+    }
+
+    return false;
+}
+
+static void favourites_strip_system_prefixes(
+    char *label)
+{
+    while (favourites_strip_one_system_prefix(label)) {
+    }
+}
+
+static bool favourites_update_system_prefix(
+    FavouritesEntry *entry)
+{
+    if (!entry->rom_backed ||
+        entry->system[0] == '\0') {
+        return false;
+    }
+
+    cJSON *label_item =
+        cJSON_GetObjectItemCaseSensitive(
+            entry->json,
+            "label");
+
+    if (!cJSON_IsString(label_item) ||
+        label_item->valuestring == NULL) {
+        return false;
+    }
+
+    char updated_label[STR_MAX];
+
+    if (favourites_manager_settings.show_system_prefixes) {
+        const char *system_label =
+            favourites_get_system_label(
+                entry->system);
+
+        if (system_label == NULL)
+            return false;
+
+        int written =
+            snprintf(
+                updated_label,
+                sizeof(updated_label),
+                "[%s] %s",
+                system_label,
+                entry->label);
+
+        if (written < 0 ||
+            (size_t)written >= sizeof(updated_label)) {
+            return false;
+        }
+    }
+    else {
+        strncpy(
+            updated_label,
+            entry->label,
+            sizeof(updated_label) - 1);
+
+        updated_label[
+            sizeof(updated_label) - 1] = '\0';
+    }
+
+    if (strcmp(
+            label_item->valuestring,
+            updated_label) == 0) {
+        return false;
+    }
+
+    return cJSON_SetValuestring(
+               label_item,
+               updated_label) != NULL;
+}
+
 static bool favourites_read(
     FavouritesCollection *collection,
     FavouritesResult *result)
@@ -253,6 +441,9 @@ static bool favourites_read(
             favourites_extract_system(
                 entry.resolved_rompath,
                 entry.system);
+
+            favourites_strip_system_prefixes(
+                entry.label);
         }
 
         if (!favourites_collection_add(
@@ -636,6 +827,8 @@ static void favourites_apply_rules(
             favourites_repair_image_path(entry)) {
             result->repaired_images++;
         }
+
+        favourites_update_system_prefix(entry);
     }
 
     favourites_sort_mode_active =

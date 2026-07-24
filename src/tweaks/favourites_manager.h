@@ -86,6 +86,7 @@ typedef struct favourites_manager_settings_s {
     bool remove_missing;
     bool repair_box_art;
     bool run_on_startup;
+    bool show_system_prefixes;
 } FavouritesManagerSettings;
 
 static FavouritesManagerSettings favourites_manager_settings;
@@ -101,6 +102,7 @@ static void favourites_manager_setDefaults(void)
         .remove_missing = false,
         .repair_box_art = true,
         .run_on_startup = false,
+        .show_system_prefixes = false,
     };
 
     favourites_priority_name_count =
@@ -145,6 +147,9 @@ static bool favourites_manager_saveSettings(void)
     cJSON_AddBoolToObject(
         root, "run_on_startup",
         favourites_manager_settings.run_on_startup);
+    cJSON_AddBoolToObject(
+        root, "show_system_prefixes",
+        favourites_manager_settings.show_system_prefixes);
 
     cJSON *custom_system_order =
         cJSON_AddArrayToObject(
@@ -260,6 +265,10 @@ static void favourites_manager_loadSettings(void)
     json_getInt(
         root, "inner_sort",
         &favourites_manager_settings.inner_sort);
+    json_getBool(
+        root, "show_system_prefixes",
+        &favourites_manager_settings.show_system_prefixes);
+
     bool migrate_system_order = false;
 
     cJSON *system_order_mode =
@@ -458,6 +467,13 @@ static void action_favouritesManagerRepairBoxArt(void *pointer)
 static void action_favouritesManagerRunOnStartup(void *pointer)
 {
     favourites_manager_settings.run_on_startup =
+        ((ListItem *)pointer)->value == 1;
+    favourites_manager_saveSettings();
+}
+
+static void action_favouritesManagerSystemPrefixes(void *pointer)
+{
+    favourites_manager_settings.show_system_prefixes =
         ((ListItem *)pointer)->value == 1;
     favourites_manager_saveSettings();
 }

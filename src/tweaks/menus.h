@@ -842,7 +842,7 @@ void menu_favouritesManagerAdvanced(void *_)
 
     if (!_menu_favourites_manager_advanced._created) {
         _menu_favourites_manager_advanced =
-            list_createWithTitle(8, LIST_SMALL, "Advanced");
+            list_createWithTitle(9, LIST_SMALL, "Advanced");
 
         list_addItemWithInfoNote(
             &_menu_favourites_manager_advanced,
@@ -878,6 +878,18 @@ void menu_favouritesManagerAdvanced(void *_)
                     menu_favouritesManagerPriorityNames},
             "Arrange priority names with left and right.\n"
             "The new order saves immediately.");
+
+        list_addItemWithInfoNote(
+            &_menu_favourites_manager_advanced,
+            (ListItem){
+                .label = "Show system prefixes",
+                .item_type = TOGGLE,
+                .value =
+                    favourites_manager_settings.show_system_prefixes,
+                .action =
+                    action_favouritesManagerSystemPrefixes},
+            "Add short system tags such as [gba].\n"
+            "Disable and apply to remove them again.");
 
         list_addItemWithInfoNote(
             &_menu_favourites_manager_advanced,
