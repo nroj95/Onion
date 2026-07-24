@@ -574,7 +574,7 @@ void menu_favouritesManager(void *_)
 
     if (!_menu_favourites_manager._created) {
         _menu_favourites_manager =
-            list_createWithTitle(7, LIST_SMALL, "Favourites manager");
+            list_createWithTitle(8, LIST_SMALL, "Favourites manager");
 
         list_addItemWithInfoNote(
             &_menu_favourites_manager,
@@ -627,6 +627,16 @@ void menu_favouritesManager(void *_)
                 .value = favourites_manager_settings.repair_box_art,
                 .action = action_favouritesManagerRepairBoxArt},
             "Repair missing or stale favourite image paths.");
+
+        list_addItemWithInfoNote(
+            &_menu_favourites_manager,
+            (ListItem){
+                .label = "Run on startup",
+                .item_type = TOGGLE,
+                .value = favourites_manager_settings.run_on_startup,
+                .action = action_favouritesManagerRunOnStartup},
+            "Automatically apply the configured rules\n"
+            "during Onion startup.");
 
         list_addItemWithInfoNote(
             &_menu_favourites_manager,

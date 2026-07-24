@@ -36,6 +36,7 @@ typedef struct favourites_manager_settings_s {
     bool remove_duplicates;
     bool remove_missing;
     bool repair_box_art;
+    bool run_on_startup;
 } FavouritesManagerSettings;
 
 static FavouritesManagerSettings favourites_manager_settings;
@@ -49,6 +50,7 @@ static void favourites_manager_setDefaults(void)
         .remove_duplicates = true,
         .remove_missing = false,
         .repair_box_art = true,
+        .run_on_startup = false,
     };
 }
 
@@ -73,6 +75,9 @@ static bool favourites_manager_saveSettings(void)
     cJSON_AddBoolToObject(
         root, "repair_box_art",
         favourites_manager_settings.repair_box_art);
+    cJSON_AddBoolToObject(
+        root, "run_on_startup",
+        favourites_manager_settings.run_on_startup);
 
     // Keep the array in the first schema so custom ordering can be added later.
     cJSON_AddArrayToObject(root, "system_order");
@@ -146,6 +151,9 @@ static void favourites_manager_loadSettings(void)
     json_getBool(
         root, "repair_box_art",
         &favourites_manager_settings.repair_box_art);
+    json_getBool(
+        root, "run_on_startup",
+        &favourites_manager_settings.run_on_startup);
 
     cJSON_Delete(root);
 
@@ -201,6 +209,13 @@ static void action_favouritesManagerRemoveMissing(void *pointer)
 static void action_favouritesManagerRepairBoxArt(void *pointer)
 {
     favourites_manager_settings.repair_box_art =
+        ((ListItem *)pointer)->value == 1;
+    favourites_manager_saveSettings();
+}
+
+static void action_favouritesManagerRunOnStartup(void *pointer)
+{
+    favourites_manager_settings.run_on_startup =
         ((ListItem *)pointer)->value == 1;
     favourites_manager_saveSettings();
 }
