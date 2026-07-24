@@ -20,6 +20,7 @@
 #include "./appstate.h"
 #include "./diags.h"
 #include "./formatters.h"
+#include "./favourites_manager.h"
 #include "./icons.h"
 #include "./network.h"
 #include "./reset.h"
@@ -569,17 +570,79 @@ void menu_blueLight(void *_)
 
 void menu_favouritesManager(void *_)
 {
+    favourites_manager_ensureSettingsLoaded();
+
     if (!_menu_favourites_manager._created) {
         _menu_favourites_manager =
-            list_createWithTitle(1, LIST_SMALL, "Favourites manager");
+            list_createWithTitle(7, LIST_SMALL, "Favourites manager");
 
         list_addItemWithInfoNote(
             &_menu_favourites_manager,
             (ListItem){
-                .label = "Manager setup pending",
+                .label = "Sort mode",
+                .item_type = MULTIVALUE,
+                .value_max = 1,
+                .value_labels = {"Alphabetical", "By system"},
+                .value = favourites_manager_settings.sort_mode,
+                .action = action_favouritesManagerSortMode},
+            "Choose the overall favourites layout.");
+
+        list_addItemWithInfoNote(
+            &_menu_favourites_manager,
+            (ListItem){
+                .label = "Games within systems",
+                .item_type = MULTIVALUE,
+                .value_max = 0,
+                .value_labels = {"Alphabetical"},
+                .value = favourites_manager_settings.inner_sort,
+                .action = action_favouritesManagerInnerSort},
+            "Choose how games are ordered inside\n"
+            "each system group.");
+
+        list_addItemWithInfoNote(
+            &_menu_favourites_manager,
+            (ListItem){
+                .label = "Remove duplicates",
+                .item_type = TOGGLE,
+                .value =
+                    favourites_manager_settings.remove_duplicates,
+                .action =
+                    action_favouritesManagerRemoveDuplicates},
+            "Remove entries that point to the same game.");
+
+        list_addItemWithInfoNote(
+            &_menu_favourites_manager,
+            (ListItem){
+                .label = "Remove missing games",
+                .item_type = TOGGLE,
+                .value = favourites_manager_settings.remove_missing,
+                .action = action_favouritesManagerRemoveMissing},
+            "Remove favourites whose ROM file no longer exists.");
+
+        list_addItemWithInfoNote(
+            &_menu_favourites_manager,
+            (ListItem){
+                .label = "Repair box art",
+                .item_type = TOGGLE,
+                .value = favourites_manager_settings.repair_box_art,
+                .action = action_favouritesManagerRepairBoxArt},
+            "Repair missing or stale favourite image paths.");
+
+        list_addItemWithInfoNote(
+            &_menu_favourites_manager,
+            (ListItem){
+                .label = "Apply changes",
                 .disabled = true},
-            "The native favourites-management pipeline\n"
-            "will be implemented here.");
+            "The favourites transformation pipeline\n"
+            "will be added next.");
+
+        list_addItemWithInfoNote(
+            &_menu_favourites_manager,
+            (ListItem){
+                .label = "Reset settings",
+                .action = action_favouritesManagerReset},
+            "Restore the favourites manager defaults.\n"
+            "The favourites list is not erased.");
     }
 
     menu_stack[++menu_level] = &_menu_favourites_manager;
