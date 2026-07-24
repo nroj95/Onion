@@ -32,9 +32,15 @@ typedef enum favourites_inner_sort_e {
     FAVOURITES_INNER_SORT_ALPHABETICAL = 0,
 } FavouritesInnerSort;
 
+typedef enum favourites_system_order_e {
+    FAVOURITES_SYSTEM_ORDER_KEEP_CURRENT = 0,
+    FAVOURITES_SYSTEM_ORDER_ALPHABETICAL = 1,
+} FavouritesSystemOrder;
+
 typedef struct favourites_manager_settings_s {
     int sort_mode;
     int inner_sort;
+    int system_order;
     bool remove_duplicates;
     bool remove_missing;
     bool repair_box_art;
@@ -49,6 +55,7 @@ static void favourites_manager_setDefaults(void)
     favourites_manager_settings = (FavouritesManagerSettings){
         .sort_mode = FAVOURITES_SORT_ALPHABETICAL,
         .inner_sort = FAVOURITES_INNER_SORT_ALPHABETICAL,
+        .system_order = FAVOURITES_SYSTEM_ORDER_ALPHABETICAL,
         .remove_duplicates = true,
         .remove_missing = false,
         .repair_box_art = true,
@@ -68,6 +75,8 @@ static bool favourites_manager_saveSettings(void)
         root, "sort_mode", favourites_manager_settings.sort_mode);
     cJSON_AddNumberToObject(
         root, "inner_sort", favourites_manager_settings.inner_sort);
+    cJSON_AddNumberToObject(
+        root, "system_order_mode", favourites_manager_settings.system_order);
     cJSON_AddBoolToObject(
         root, "remove_duplicates",
         favourites_manager_settings.remove_duplicates);
@@ -81,8 +90,8 @@ static bool favourites_manager_saveSettings(void)
         root, "run_on_startup",
         favourites_manager_settings.run_on_startup);
 
-    // Keep the array in the first schema so custom ordering can be added later.
-    cJSON_AddArrayToObject(root, "system_order");
+    // Reserved for the optional custom system-order editor.
+    cJSON_AddArrayToObject(root, "custom_system_order");
 
     char *output = cJSON_Print(root);
     cJSON_Delete(root);
@@ -144,6 +153,30 @@ static void favourites_manager_loadSettings(void)
     json_getInt(
         root, "inner_sort",
         &favourites_manager_settings.inner_sort);
+    bool migrate_system_order = false;
+
+    cJSON *system_order_mode =
+        cJSON_GetObjectItemCaseSensitive(
+            root,
+            "system_order_mode");
+
+    if (cJSON_IsNumber(system_order_mode)) {
+        favourites_manager_settings.system_order =
+            system_order_mode->valueint;
+    }
+    else {
+        cJSON *legacy_system_order =
+            cJSON_GetObjectItemCaseSensitive(
+                root,
+                "system_order");
+
+        if (cJSON_IsNumber(legacy_system_order)) {
+            favourites_manager_settings.system_order =
+                legacy_system_order->valueint;
+            migrate_system_order = true;
+        }
+    }
+
     json_getBool(
         root, "remove_duplicates",
         &favourites_manager_settings.remove_duplicates);
@@ -171,7 +204,18 @@ static void favourites_manager_loadSettings(void)
     favourites_manager_settings.inner_sort =
         FAVOURITES_INNER_SORT_ALPHABETICAL;
 
+    if (favourites_manager_settings.system_order <
+            FAVOURITES_SYSTEM_ORDER_KEEP_CURRENT ||
+        favourites_manager_settings.system_order >
+            FAVOURITES_SYSTEM_ORDER_ALPHABETICAL) {
+        favourites_manager_settings.system_order =
+            FAVOURITES_SYSTEM_ORDER_ALPHABETICAL;
+    }
+
     favourites_manager_settings_loaded = true;
+
+    if (migrate_system_order)
+        favourites_manager_saveSettings();
 }
 
 static void favourites_manager_ensureSettingsLoaded(void)
@@ -183,6 +227,13 @@ static void favourites_manager_ensureSettingsLoaded(void)
 static void action_favouritesManagerSortMode(void *pointer)
 {
     favourites_manager_settings.sort_mode =
+        ((ListItem *)pointer)->value;
+    favourites_manager_saveSettings();
+}
+
+static void action_favouritesManagerSystemOrder(void *pointer)
+{
+    favourites_manager_settings.system_order =
         ((ListItem *)pointer)->value;
     favourites_manager_saveSettings();
 }

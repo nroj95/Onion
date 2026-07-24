@@ -45,8 +45,18 @@ typedef struct favourites_collection_s {
     int capacity;
 } FavouritesCollection;
 
+#define FAVOURITES_MAX_SYSTEMS 256
+
 static int favourites_sort_mode_active =
     FAVOURITES_SORT_ALPHABETICAL;
+
+static int favourites_system_order_active =
+    FAVOURITES_SYSTEM_ORDER_ALPHABETICAL;
+
+static char favourites_current_system_order
+    [FAVOURITES_MAX_SYSTEMS][STR_MAX];
+
+static int favourites_current_system_count = 0;
 
 static void favourites_collection_free(
     FavouritesCollection *collection)
@@ -337,6 +347,60 @@ static bool favourites_repair_image_path(
         image_path);
 }
 
+static int favourites_find_system_order(
+    const char *system)
+{
+    for (int i = 0;
+         i < favourites_current_system_count;
+         i++) {
+        if (strcasecmp(
+                favourites_current_system_order[i],
+                system) == 0) {
+            return i;
+        }
+    }
+
+    return FAVOURITES_MAX_SYSTEMS;
+}
+
+static void favourites_capture_current_system_order(
+    const FavouritesCollection *collection)
+{
+    favourites_current_system_count = 0;
+
+    for (int i = 0;
+         i < collection->count &&
+         favourites_current_system_count <
+             FAVOURITES_MAX_SYSTEMS;
+         i++) {
+        const FavouritesEntry *entry =
+            &collection->entries[i];
+
+        if (!entry->rom_backed ||
+            entry->system[0] == '\0') {
+            continue;
+        }
+
+        if (favourites_find_system_order(
+                entry->system) <
+            FAVOURITES_MAX_SYSTEMS) {
+            continue;
+        }
+
+        strncpy(
+            favourites_current_system_order[
+                favourites_current_system_count],
+            entry->system,
+            STR_MAX - 1);
+
+        favourites_current_system_order[
+            favourites_current_system_count]
+            [STR_MAX - 1] = '\0';
+
+        favourites_current_system_count++;
+    }
+}
+
 static int favourites_compare_entries(
     const void *left_pointer,
     const void *right_pointer)
@@ -352,7 +416,23 @@ static int favourites_compare_entries(
         if (left->rom_backed != right->rom_backed)
             return left->rom_backed ? -1 : 1;
 
-        int system_compare =
+        int system_compare = 0;
+
+        if (favourites_system_order_active ==
+            FAVOURITES_SYSTEM_ORDER_KEEP_CURRENT) {
+            int left_order =
+                favourites_find_system_order(
+                    left->system);
+
+            int right_order =
+                favourites_find_system_order(
+                    right->system);
+
+            if (left_order != right_order)
+                return left_order - right_order;
+        }
+
+        system_compare =
             strcasecmp(left->system, right->system);
 
         if (system_compare != 0)
@@ -420,6 +500,17 @@ static void favourites_apply_rules(
 
     favourites_sort_mode_active =
         favourites_manager_settings.sort_mode;
+
+    favourites_system_order_active =
+        favourites_manager_settings.system_order;
+
+    if (favourites_sort_mode_active ==
+            FAVOURITES_SORT_BY_SYSTEM &&
+        favourites_system_order_active ==
+            FAVOURITES_SYSTEM_ORDER_KEEP_CURRENT) {
+        favourites_capture_current_system_order(
+            collection);
+    }
 
     qsort(
         collection->entries,
@@ -568,6 +659,21 @@ static bool favourites_apply(
 
     favourites_collection_free(&collection);
     return success;
+}
+
+static int favourites_manager_processStartup(void)
+{
+    favourites_manager_ensureSettingsLoaded();
+
+    if (!favourites_manager_settings.run_on_startup)
+        return 0;
+
+    FavouritesResult result;
+
+    if (!favourites_apply(&result))
+        return 1;
+
+    return result.malformed > 0 ? 1 : 0;
 }
 
 static void favourites_show_result(

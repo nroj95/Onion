@@ -574,7 +574,24 @@ void menu_favouritesManagerAdvanced(void *_)
 
     if (!_menu_favourites_manager_advanced._created) {
         _menu_favourites_manager_advanced =
-            list_createWithTitle(5, LIST_SMALL, "Advanced");
+            list_createWithTitle(6, LIST_SMALL, "Advanced");
+
+        list_addItemWithInfoNote(
+            &_menu_favourites_manager_advanced,
+            (ListItem){
+                .label = "System order",
+                .item_type = MULTIVALUE,
+                .value_max = 1,
+                .value_labels = {
+                    "Keep current",
+                    "Alphabetical",
+                },
+                .value =
+                    favourites_manager_settings.system_order,
+                .action =
+                    action_favouritesManagerSystemOrder},
+            "Choose how system groups are ordered.\n"
+            "Games remain alphabetical inside them.");
 
         list_addItemWithInfoNote(
             &_menu_favourites_manager_advanced,
