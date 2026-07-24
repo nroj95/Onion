@@ -2,6 +2,7 @@
 #define TWEAKS_FAVOURITES_MANAGER_ENGINE_H__
 
 #include <stdbool.h>
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -415,6 +416,105 @@ static void favourites_capture_current_system_order(
     }
 }
 
+static bool favourites_priority_name_matches(
+    const char *label,
+    const char *priority_name)
+{
+    if (label == NULL ||
+        priority_name == NULL ||
+        priority_name[0] == '\0') {
+        return false;
+    }
+
+    for (size_t start = 0;
+         label[start] != '\0';
+         start++) {
+        unsigned char start_character =
+            (unsigned char)label[start];
+
+        if (!isalnum(start_character))
+            continue;
+
+        if (start > 0 &&
+            isalnum(
+                (unsigned char)label[start - 1])) {
+            continue;
+        }
+
+        size_t label_position = start;
+        size_t name_position = 0;
+
+        while (true) {
+            while (priority_name[name_position] != '\0' &&
+                   !isalnum(
+                       (unsigned char)
+                           priority_name[name_position])) {
+                name_position++;
+            }
+
+            if (priority_name[name_position] == '\0')
+                break;
+
+            while (label[label_position] != '\0' &&
+                   !isalnum(
+                       (unsigned char)
+                           label[label_position])) {
+                label_position++;
+            }
+
+            if (label[label_position] == '\0')
+                break;
+
+            if (tolower(
+                    (unsigned char)
+                        label[label_position]) !=
+                tolower(
+                    (unsigned char)
+                        priority_name[name_position])) {
+                break;
+            }
+
+            label_position++;
+            name_position++;
+        }
+
+        while (priority_name[name_position] != '\0' &&
+               !isalnum(
+                   (unsigned char)
+                       priority_name[name_position])) {
+            name_position++;
+        }
+
+        if (priority_name[name_position] != '\0')
+            continue;
+
+        if (label[label_position] == '\0' ||
+            !isalnum(
+                (unsigned char)
+                    label[label_position])) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static int favourites_find_priority_name(
+    const char *label)
+{
+    for (int i = 0;
+         i < favourites_priority_name_count;
+         i++) {
+        if (favourites_priority_name_matches(
+                label,
+                favourites_priority_names[i])) {
+            return i;
+        }
+    }
+
+    return favourites_priority_name_count;
+}
+
 static int favourites_compare_entries(
     const void *left_pointer,
     const void *right_pointer)
@@ -426,7 +526,20 @@ static int favourites_compare_entries(
         (const FavouritesEntry *)right_pointer;
 
     if (favourites_sort_mode_active ==
-        FAVOURITES_SORT_BY_SYSTEM) {
+        FAVOURITES_SORT_PRIORITY_NAMES) {
+        int left_priority =
+            favourites_find_priority_name(
+                left->label);
+
+        int right_priority =
+            favourites_find_priority_name(
+                right->label);
+
+        if (left_priority != right_priority)
+            return left_priority - right_priority;
+    }
+    else if (favourites_sort_mode_active ==
+             FAVOURITES_SORT_BY_SYSTEM) {
         if (left->rom_backed != right->rom_backed)
             return left->rom_backed ? -1 : 1;
 

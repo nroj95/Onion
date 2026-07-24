@@ -708,13 +708,141 @@ void menu_favouritesManagerSystemOrder(void *_)
     header_changed = true;
 }
 
+static void formatter_favouritesManagerPriorityNameMove(
+    void *pointer,
+    char *out_label)
+{
+    (void)pointer;
+    strcpy(out_label, " ");
+}
+
+static void action_favouritesManagerMovePriorityName(
+    void *pointer)
+{
+    ListItem *item = (ListItem *)pointer;
+    int position = item->_id;
+    int direction = item->value < 1 ? -1 : 1;
+    int destination = position + direction;
+
+    item->value = 1;
+
+    if (destination < 0 ||
+        destination >=
+            _menu_favourites_manager_priority_names.item_count) {
+        return;
+    }
+
+    ListItem *other =
+        &_menu_favourites_manager_priority_names
+             .items[destination];
+
+    char label[STR_MAX];
+    char payload[STR_MAX];
+
+    strcpy(label, item->label);
+    strcpy(payload, item->payload);
+
+    strcpy(item->label, other->label);
+    strcpy(item->payload, other->payload);
+
+    strcpy(other->label, label);
+    strcpy(other->payload, payload);
+
+    _menu_favourites_manager_priority_names.active_pos =
+        destination;
+
+    list_scroll(
+        &_menu_favourites_manager_priority_names);
+
+    favourites_priority_name_count =
+        _menu_favourites_manager_priority_names.item_count;
+
+    for (int i = 0;
+         i < favourites_priority_name_count;
+         i++) {
+        strncpy(
+            favourites_priority_names[i],
+            _menu_favourites_manager_priority_names
+                .items[i]
+                .payload,
+            STR_MAX - 1);
+
+        favourites_priority_names[i]
+            [STR_MAX - 1] = '\0';
+    }
+
+    favourites_manager_settings.sort_mode =
+        FAVOURITES_SORT_PRIORITY_NAMES;
+
+    favourites_manager_saveSettings();
+
+    reset_menus = true;
+    all_changed = true;
+}
+
+void menu_favouritesManagerPriorityNames(void *_)
+{
+    favourites_manager_ensureSettingsLoaded();
+
+    list_free(
+        &_menu_favourites_manager_priority_names);
+
+    _menu_favourites_manager_priority_names =
+        list_createWithTitle(
+            favourites_priority_name_count,
+            LIST_SMALL,
+            "Priority names");
+
+    for (int i = 0;
+         i < favourites_priority_name_count;
+         i++) {
+        ListItem *item =
+            list_addItemWithInfoNote(
+                &_menu_favourites_manager_priority_names,
+                (ListItem){
+                    .label = "",
+                    .payload = "",
+                    .item_type = MULTIVALUE,
+                    .value = 1,
+                    .value_min = 0,
+                    .value_max = 2,
+                    .value_formatter =
+                        formatter_favouritesManagerPriorityNameMove,
+                    .disable_a_btn = true,
+                    .alternative_arrow_action = true,
+                    .arrow_action =
+                        action_favouritesManagerMovePriorityName,
+                },
+                "Use left and right to move this name.");
+
+        strncpy(
+            item->label,
+            favourites_priority_names[i],
+            STR_MAX - 1);
+
+        item->label[STR_MAX - 1] = '\0';
+
+        strncpy(
+            item->payload,
+            favourites_priority_names[i],
+            STR_MAX - 1);
+
+        item->payload[STR_MAX - 1] = '\0';
+    }
+
+    menu_stack[++menu_level] =
+        &_menu_favourites_manager_priority_names;
+
+    header_changed = true;
+}
+
 void menu_favouritesManagerAdvanced(void *_)
 {
     favourites_manager_ensureSettingsLoaded();
 
     if (!_menu_favourites_manager_advanced._created) {
         _menu_favourites_manager_advanced =
-            list_createWithTitle(7, LIST_SMALL, "Advanced");
+            list_createWithTitle(8, LIST_SMALL, "Advanced");
 
         list_addItemWithInfoNote(
             &_menu_favourites_manager_advanced,
@@ -741,6 +869,15 @@ void menu_favouritesManagerAdvanced(void *_)
                 .action = menu_favouritesManagerSystemOrder},
             "Arrange systems with left and right.\n"
             "The custom order saves immediately.");
+
+        list_addItemWithInfoNote(
+            &_menu_favourites_manager_advanced,
+            (ListItem){
+                .label = "Edit priority names...",
+                .action =
+                    menu_favouritesManagerPriorityNames},
+            "Arrange priority names with left and right.\n"
+            "The new order saves immediately.");
 
         list_addItemWithInfoNote(
             &_menu_favourites_manager_advanced,
@@ -808,8 +945,12 @@ void menu_favouritesManager(void *_)
             (ListItem){
                 .label = "Sort mode",
                 .item_type = MULTIVALUE,
-                .value_max = 1,
-                .value_labels = {"Alphabetical", "By system"},
+                .value_max = 2,
+                .value_labels = {
+                    "Alphabetical",
+                    "By system",
+                    "Priority names",
+                },
                 .value = favourites_manager_settings.sort_mode,
                 .action = action_favouritesManagerSortMode},
             "Choose the overall favorites order.");

@@ -26,6 +26,7 @@
 typedef enum favourites_sort_mode_e {
     FAVOURITES_SORT_ALPHABETICAL = 0,
     FAVOURITES_SORT_BY_SYSTEM = 1,
+    FAVOURITES_SORT_PRIORITY_NAMES = 2,
 } FavouritesSortMode;
 
 typedef enum favourites_inner_sort_e {
@@ -39,6 +40,38 @@ typedef enum favourites_system_order_e {
 } FavouritesSystemOrder;
 
 #define FAVOURITES_MAX_SYSTEMS 256
+#define FAVOURITES_PRIORITY_NAME_COUNT 21
+
+static const char *favourites_default_priority_names
+    [FAVOURITES_PRIORITY_NAME_COUNT] = {
+        "mario",
+        "pokemon",
+        "zelda",
+        "sonic",
+        "mega man",
+        "castlevania",
+        "final fantasy",
+        "donkey kong",
+        "kirby",
+        "metroid",
+        "street fighter",
+        "resident evil",
+        "dragon quest",
+        "fire emblem",
+        "contra",
+        "crash",
+        "spyro",
+        "tekken",
+        "mortal kombat",
+        "pac-man",
+        "tetris",
+};
+
+static char favourites_priority_names
+    [FAVOURITES_PRIORITY_NAME_COUNT][STR_MAX];
+
+static int favourites_priority_name_count =
+    FAVOURITES_PRIORITY_NAME_COUNT;
 
 static char favourites_custom_system_order
     [FAVOURITES_MAX_SYSTEMS][STR_MAX];
@@ -69,6 +102,21 @@ static void favourites_manager_setDefaults(void)
         .repair_box_art = true,
         .run_on_startup = false,
     };
+
+    favourites_priority_name_count =
+        FAVOURITES_PRIORITY_NAME_COUNT;
+
+    for (int i = 0;
+         i < favourites_priority_name_count;
+         i++) {
+        strncpy(
+            favourites_priority_names[i],
+            favourites_default_priority_names[i],
+            STR_MAX - 1);
+
+        favourites_priority_names[i]
+            [STR_MAX - 1] = '\0';
+    }
 }
 
 static bool favourites_manager_saveSettings(void)
@@ -123,6 +171,33 @@ static bool favourites_manager_saveSettings(void)
         cJSON_AddItemToArray(
             custom_system_order,
             system);
+    }
+
+    cJSON *priority_names =
+        cJSON_AddArrayToObject(
+            root,
+            "priority_names");
+
+    if (priority_names == NULL) {
+        cJSON_Delete(root);
+        return false;
+    }
+
+    for (int i = 0;
+         i < favourites_priority_name_count;
+         i++) {
+        cJSON *name =
+            cJSON_CreateString(
+                favourites_priority_names[i]);
+
+        if (name == NULL) {
+            cJSON_Delete(root);
+            return false;
+        }
+
+        cJSON_AddItemToArray(
+            priority_names,
+            name);
     }
 
     char *output = cJSON_Print(root);
@@ -244,6 +319,60 @@ static void favourites_manager_loadSettings(void)
         }
     }
 
+    cJSON *priority_names =
+        cJSON_GetObjectItemCaseSensitive(
+            root,
+            "priority_names");
+
+    if (cJSON_IsArray(priority_names) &&
+        cJSON_GetArraySize(priority_names) ==
+            FAVOURITES_PRIORITY_NAME_COUNT) {
+        char loaded_priority_names
+            [FAVOURITES_PRIORITY_NAME_COUNT][STR_MAX];
+
+        int loaded_priority_name_count = 0;
+        cJSON *name = NULL;
+
+        cJSON_ArrayForEach(
+            name,
+            priority_names) {
+            if (!cJSON_IsString(name) ||
+                name->valuestring == NULL ||
+                name->valuestring[0] == '\0' ||
+                loaded_priority_name_count >=
+                    FAVOURITES_PRIORITY_NAME_COUNT) {
+                loaded_priority_name_count = 0;
+                break;
+            }
+
+            strncpy(
+                loaded_priority_names[
+                    loaded_priority_name_count],
+                name->valuestring,
+                STR_MAX - 1);
+
+            loaded_priority_names[
+                loaded_priority_name_count]
+                [STR_MAX - 1] = '\0';
+
+            loaded_priority_name_count++;
+        }
+
+        if (loaded_priority_name_count ==
+            FAVOURITES_PRIORITY_NAME_COUNT) {
+            favourites_priority_name_count =
+                loaded_priority_name_count;
+
+            for (int i = 0;
+                 i < favourites_priority_name_count;
+                 i++) {
+                strcpy(
+                    favourites_priority_names[i],
+                    loaded_priority_names[i]);
+            }
+        }
+    }
+
     json_getBool(
         root, "remove_duplicates",
         &favourites_manager_settings.remove_duplicates);
@@ -263,7 +392,7 @@ static void favourites_manager_loadSettings(void)
     if (favourites_manager_settings.sort_mode <
             FAVOURITES_SORT_ALPHABETICAL ||
         favourites_manager_settings.sort_mode >
-            FAVOURITES_SORT_BY_SYSTEM) {
+            FAVOURITES_SORT_PRIORITY_NAMES) {
         favourites_manager_settings.sort_mode =
             FAVOURITES_SORT_ALPHABETICAL;
     }
