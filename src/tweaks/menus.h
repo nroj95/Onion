@@ -567,12 +567,31 @@ void menu_blueLight(void *_)
     header_changed = true;
 }
 
+void menu_favouritesManager(void *_)
+{
+    if (!_menu_favourites_manager._created) {
+        _menu_favourites_manager =
+            list_createWithTitle(1, LIST_SMALL, "Favourites manager");
+
+        list_addItemWithInfoNote(
+            &_menu_favourites_manager,
+            (ListItem){
+                .label = "Manager setup pending",
+                .disabled = true},
+            "The native favourites-management pipeline\n"
+            "will be implemented here.");
+    }
+
+    menu_stack[++menu_level] = &_menu_favourites_manager;
+    header_changed = true;
+}
+
 void menu_userInterface(void *_)
 {
     settings.blue_light_state = config_flag_get(".blfOn");
     all_changed = true;
     if (!_menu_user_interface._created) {
-        _menu_user_interface = list_createWithTitle(6, LIST_SMALL, "Appearance");
+        _menu_user_interface = list_createWithTitle(7, LIST_SMALL, "Appearance");
         list_addItemWithInfoNote(&_menu_user_interface,
                                  (ListItem){
                                      .label = "Show recents",
@@ -613,6 +632,10 @@ void menu_userInterface(void *_)
                      (ListItem){
                          .label = "Icons packs...",
                          .action = menu_icons});
+        list_addItem(&_menu_user_interface,
+                     (ListItem){
+                         .label = "Favourites manager...",
+                         .action = menu_favouritesManager});
     }
     menu_stack[++menu_level] = &_menu_user_interface;
     header_changed = true;
