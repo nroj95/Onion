@@ -106,39 +106,69 @@ void freeResources(AppState *st)
     free(st);
 }
 
+
 void showHelp(AppState *st)
 {
-    theme_renderDialog(screen, "EmuSort", "[L2/R2] Move emulators\n[X] Sort by A-Z/Z-A\n[Y] Sort by playtime\n \n[A] Continue", false);
+    theme_renderDialog(
+        screen,
+        "Emulator ordering",
+        "[L2/R2] Move systems\n"
+        "[X] Sort by A-Z/Z-A\n"
+        "[Y] Sort by playtime\n"
+        "[SELECT] Reset ordering\n"
+        "[A/B] Close help",
+        false);
     blitFlip();
-    while (!quit)
-        if (updateKeystate(st->keystate, &quit, true, NULL) && st->keystate[SW_BTN_A] == PRESSED)
+
+    while (!quit) {
+        if (!updateKeystate(st->keystate, &quit, true, NULL))
+            continue;
+
+        if (st->keystate[SW_BTN_A] == PRESSED ||
+            st->keystate[SW_BTN_B] == PRESSED)
             break;
+    }
 
     st->header_changed = st->list_changed = true;
 }
 
 void showSplashScreen(AppState *st)
 {
-    theme_renderDialog(screen, "EmuSort", "[L2/R2] Move emulators\n[X] Sort by A-Z/Z-A\n[Y] Sort by playtime\n[START] Show help\n[SELECT] Don't show this hint again\n[Any key] Continue", false);
+    theme_renderDialog(
+        screen,
+        "Emulator ordering",
+        "[L2/R2] Move systems\n"
+        "[X] Sort by A-Z/Z-A\n"
+        "[Y] Sort by playtime\n"
+        "[START] Show help\n"
+        "[SELECT] Don't show again\n"
+        "[Any key] Continue",
+        false);
     blitFlip();
+
     while (!quit) {
-        if (updateKeystate(st->keystate, &quit, true, NULL)) {
-            if (st->keystate[SW_BTN_SELECT] == PRESSED) {
-                FILE *file = fopen(HIDE_SPLASH_FLAG, "w");
-                if (file)
-                    fclose(file);
-            }
-            break;
+        if (!updateKeystate(st->keystate, &quit, true, NULL))
+            continue;
+
+        if (st->keystate[SW_BTN_SELECT] == PRESSED) {
+            FILE *flag_file = fopen(HIDE_SPLASH_FLAG, "w");
+            if (flag_file != NULL)
+                fclose(flag_file);
         }
+
+        break;
     }
+
+    st->header_changed = st->list_changed = true;
 }
+
 
 AppState *init()
 {
     signal(SIGINT, sigHandler);
     signal(SIGTERM, sigHandler);
 
-    log_setName("emuSort");
+    log_setName("emusort");
     print_debug("Debug logging enabled");
     getDeviceModel();
     SDL_InitDefault();
@@ -231,77 +261,169 @@ char *padString(const char *input, size_t pad_amount)
 //
 // Save the emulators config files with the padded labels
 //
-void saveItems(AppState *st)
+
+static bool writeLabelAtomic(const char *config_path, const char *label)
+{
+    FILE *source_file = fopen(config_path, "r");
+    if (source_file == NULL) {
+        fprintf(stderr, "Error opening file for reading: %s\n", config_path);
+        return false;
+    }
+
+    if (fseek(source_file, 0, SEEK_END) != 0) {
+        fclose(source_file);
+        fprintf(stderr, "Error seeking file: %s\n", config_path);
+        return false;
+    }
+
+    long file_size = ftell(source_file);
+    if (file_size < 0 || fseek(source_file, 0, SEEK_SET) != 0) {
+        fclose(source_file);
+        fprintf(stderr, "Error reading file size: %s\n", config_path);
+        return false;
+    }
+
+    char *buffer = malloc((size_t)file_size + 1);
+    if (buffer == NULL) {
+        fclose(source_file);
+        fprintf(stderr, "Error allocating memory for file: %s\n", config_path);
+        return false;
+    }
+
+    size_t bytes_read = fread(buffer, 1, (size_t)file_size, source_file);
+    fclose(source_file);
+
+    if (bytes_read != (size_t)file_size) {
+        free(buffer);
+        fprintf(stderr, "Error reading file: %s\n", config_path);
+        return false;
+    }
+
+    buffer[file_size] = '\0';
+
+    cJSON *root = cJSON_Parse(buffer);
+    free(buffer);
+
+    if (root == NULL) {
+        fprintf(stderr, "Error parsing JSON in file: %s\n", config_path);
+        return false;
+    }
+
+    cJSON_ReplaceItemInObject(
+        root,
+        "label",
+        cJSON_CreateString(label));
+
+    char *json_text = cJSON_Print(root);
+    cJSON_Delete(root);
+
+    if (json_text == NULL) {
+        fprintf(stderr, "Error creating JSON for file: %s\n", config_path);
+        return false;
+    }
+
+    char temporary_path[STR_MAX + 8];
+    int path_length = snprintf(
+        temporary_path,
+        sizeof(temporary_path),
+        "%s.tmp",
+        config_path);
+
+    if (path_length < 0 || path_length >= (int)sizeof(temporary_path)) {
+        free(json_text);
+        fprintf(stderr, "Temporary path is too long: %s\n", config_path);
+        return false;
+    }
+
+    FILE *temporary_file = fopen(temporary_path, "w");
+    if (temporary_file == NULL) {
+        free(json_text);
+        fprintf(stderr, "Error opening temporary file: %s\n", temporary_path);
+        return false;
+    }
+
+    bool write_succeeded = fprintf(temporary_file, "%s\n", json_text) >= 0;
+    free(json_text);
+
+    if (write_succeeded)
+        write_succeeded = fflush(temporary_file) == 0;
+
+    if (write_succeeded)
+        write_succeeded = fsync(fileno(temporary_file)) == 0;
+
+    if (fclose(temporary_file) != 0)
+        write_succeeded = false;
+
+    if (!write_succeeded) {
+        remove(temporary_path);
+        fprintf(stderr, "Error writing temporary file: %s\n", temporary_path);
+        return false;
+    }
+
+    if (rename(temporary_path, config_path) != 0) {
+        remove(temporary_path);
+        fprintf(stderr, "Error replacing file: %s\n", config_path);
+        return false;
+    }
+
+    return true;
+}
+
+void saveItems(AppState *st, bool reset_ordering)
 {
     theme_renderDialog(screen, "Saving...", "Please wait", false);
     blitFlip();
 
+    int failed_count = 0;
+
     for (int i = 0; i < st->emu_count; i++) {
-        // read the existing JSON file
-        FILE *file = fopen(st->emus[i].path, "r");
-        if (!file) {
-            fprintf(stderr, "Error opening file for reading: %s\n", st->emus[i].path);
-            continue;
-        }
+        int padding = reset_ordering ? 0 : st->emu_count - i - 1;
 
-        fseek(file, 0, SEEK_END);
-        long file_size = ftell(file);
-        fseek(file, 0, SEEK_SET);
+        char *saved_label = padString(
+            st->emu_list.items[i].label,
+            (size_t)padding);
 
-        char *buffer = (char *)malloc(file_size + 1);
-        if (!buffer) {
-            fclose(file);
-            fprintf(stderr, "Error allocating memory for file: %s\n", st->emus[i].path);
-            continue;
-        }
+        if (!writeLabelAtomic(st->emus[i].path, saved_label))
+            failed_count++;
 
-        fread(buffer, 1, file_size, file);
-        fclose(file);
-
-        buffer[file_size] = '\0';
-
-        cJSON *root = cJSON_Parse(buffer);
-        free(buffer);
-
-        if (!root) {
-            fprintf(stderr, "Error parsing JSON in file: %s\n", st->emus[i].path);
-            continue;
-        }
-
-        int num_spaces = st->emu_count - i - 1;
-
-        // add spaces
-        char *spaced_label = padString(st->emu_list.items[i].label, num_spaces);
-        // printf("Updating label from \"%s\" to \"%s\"\n", st->emu_list.items[i].label, spaced_label);
-
-        // write padded label back to the cJSON object
-        cJSON_ReplaceItemInObject(root, "label", cJSON_CreateString(spaced_label));
-        free(spaced_label);
-
-        // convert the cJSON object to a formatted JSON string
-        char *json_str = cJSON_Print(root);
-        cJSON_Delete(root);
-
-        // write the JSON string back to the file
-        file = fopen(st->emus[i].path, "w");
-        if (!file) {
-            fprintf(stderr, "Error opening file for writing: %s\n", st->emus[i].path);
-            free(json_str);
-            continue;
-        }
-
-        fprintf(file, "%s\n", json_str);
-        fsync(fileno(file));
-        fclose(file);
-        free(json_str);
+        free(saved_label);
     }
 
-    // feedback for user then quit
-    theme_renderDialog(screen, "Done!", "Items have been sorted", false);
+    if (failed_count > 0) {
+        char message[STR_MAX];
+        snprintf(
+            message,
+            sizeof(message),
+            "%d system%s could not be saved.\n"
+            "Check the error log and try again.",
+            failed_count,
+            failed_count == 1 ? "" : "s");
+
+        theme_renderDialog(
+            screen,
+            "Save incomplete",
+            message,
+            false);
+        blitFlip();
+        sleep(2);
+
+        st->all_changed = true;
+        return;
+    }
+
+    theme_renderDialog(
+        screen,
+        reset_ordering ? "Ordering reset" : "Done!",
+        reset_ordering
+            ? "Natural alphabetical order restored"
+            : "Systems have been reordered",
+        false);
     blitFlip();
     sleep(1);
+
     quit = true;
 }
+
 
 //
 // Sort the emulators alphabetically, alternating direction
@@ -338,6 +460,36 @@ bool sortByPlaytime(AppState *st)
     return true;
 }
 
+
+void confirmResetOrdering(AppState *st)
+{
+    theme_renderDialog(
+        screen,
+        "Reset ordering?",
+        "Remove the custom system order?\n"
+        "Systems will return to natural\n"
+        "alphabetical order.\n"
+        " \n"
+        "[A] Reset   [B] Cancel",
+        false);
+    blitFlip();
+
+    while (!quit) {
+        if (!updateKeystate(st->keystate, &quit, true, NULL))
+            continue;
+
+        if (st->keystate[SW_BTN_A] == PRESSED) {
+            saveItems(st, true);
+            return;
+        }
+
+        if (st->keystate[SW_BTN_B] == PRESSED) {
+            st->all_changed = true;
+            return;
+        }
+    }
+}
+
 void handleKeys(AppState *st)
 {
     if (updateKeystate(st->keystate, &quit, true, NULL)) {
@@ -345,7 +497,7 @@ void handleKeys(AppState *st)
         if (st->keystate[SW_BTN_B] == PRESSED) // quit
             cancel = quit = true;
         else if (st->keystate[SW_BTN_A] == PRESSED) // save & quit
-            saveItems(st);
+            saveItems(st, false);
         else if (st->keystate[SW_BTN_DOWN] >= PRESSED) // scroll down
             st->key_changed = list_keyDown(&st->emu_list, st->keystate[SW_BTN_DOWN] == REPEATING);
         else if (st->keystate[SW_BTN_UP] >= PRESSED) // scroll up
@@ -360,6 +512,8 @@ void handleKeys(AppState *st)
             st->key_changed = sortByPlaytime(st);
         else if (st->keystate[SW_BTN_START] == PRESSED) // show help
             showHelp(st);
+        else if (st->keystate[SW_BTN_SELECT] == PRESSED) // reset ordering
+            confirmResetOrdering(st);
 
         st->list_changed = st->list_changed || st->key_changed;
     }
@@ -635,7 +789,7 @@ void render(AppState *st)
 
     if (st->header_changed || st->battery_changed || st->all_changed) {
         START_TIMER(tm_renderHeader);
-        theme_renderHeader(screen, "EmuSort", false);
+        theme_renderHeader(screen, "Emulator ordering", false);
         theme_renderHeaderBattery(screen, st->battery_percentage);
         END_TIMER(tm_renderHeader);
     }
