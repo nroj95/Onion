@@ -187,13 +187,6 @@ static void action_favouritesManagerSortMode(void *pointer)
     favourites_manager_saveSettings();
 }
 
-static void action_favouritesManagerInnerSort(void *pointer)
-{
-    favourites_manager_settings.inner_sort =
-        ((ListItem *)pointer)->value;
-    favourites_manager_saveSettings();
-}
-
 static void action_favouritesManagerRemoveDuplicates(void *pointer)
 {
     favourites_manager_settings.remove_duplicates =

@@ -568,13 +568,74 @@ void menu_blueLight(void *_)
     header_changed = true;
 }
 
+void menu_favouritesManagerAdvanced(void *_)
+{
+    favourites_manager_ensureSettingsLoaded();
+
+    if (!_menu_favourites_manager_advanced._created) {
+        _menu_favourites_manager_advanced =
+            list_createWithTitle(5, LIST_SMALL, "Advanced");
+
+        list_addItemWithInfoNote(
+            &_menu_favourites_manager_advanced,
+            (ListItem){
+                .label = "Remove duplicates",
+                .item_type = TOGGLE,
+                .value =
+                    favourites_manager_settings.remove_duplicates,
+                .action =
+                    action_favouritesManagerRemoveDuplicates},
+            "Remove repeated entries that point to\n"
+            "the same game.");
+
+        list_addItemWithInfoNote(
+            &_menu_favourites_manager_advanced,
+            (ListItem){
+                .label = "Remove missing games",
+                .item_type = TOGGLE,
+                .value = favourites_manager_settings.remove_missing,
+                .action = action_favouritesManagerRemoveMissing},
+            "Remove favorites whose ROM file no\n"
+            "longer exists.");
+
+        list_addItemWithInfoNote(
+            &_menu_favourites_manager_advanced,
+            (ListItem){
+                .label = "Repair box art",
+                .item_type = TOGGLE,
+                .value = favourites_manager_settings.repair_box_art,
+                .action = action_favouritesManagerRepairBoxArt},
+            "Repair missing or stale image paths.");
+
+        list_addItemWithInfoNote(
+            &_menu_favourites_manager_advanced,
+            (ListItem){
+                .label = "Restore last backup",
+                .action = action_favouritesManagerRestoreBackup},
+            "Restore the favorites list from before\n"
+            "the latest successful apply.");
+
+        list_addItemWithInfoNote(
+            &_menu_favourites_manager_advanced,
+            (ListItem){
+                .label = "Reset settings",
+                .action = action_favouritesManagerReset},
+            "Restore the manager's default settings.\n"
+            "The favorites list is not erased.");
+    }
+
+    menu_stack[++menu_level] =
+        &_menu_favourites_manager_advanced;
+    header_changed = true;
+}
+
 void menu_favouritesManager(void *_)
 {
     favourites_manager_ensureSettingsLoaded();
 
     if (!_menu_favourites_manager._created) {
         _menu_favourites_manager =
-            list_createWithTitle(9, LIST_SMALL, "Favorites manager");
+            list_createWithTitle(5, LIST_SMALL, "Favorites manager");
 
         list_addItemWithInfoNote(
             &_menu_favourites_manager,
@@ -585,48 +646,7 @@ void menu_favouritesManager(void *_)
                 .value_labels = {"Alphabetical", "By system"},
                 .value = favourites_manager_settings.sort_mode,
                 .action = action_favouritesManagerSortMode},
-            "Choose the overall favourites layout.");
-
-        list_addItemWithInfoNote(
-            &_menu_favourites_manager,
-            (ListItem){
-                .label = "Games within systems",
-                .item_type = MULTIVALUE,
-                .value_max = 0,
-                .value_labels = {"Alphabetical"},
-                .value = favourites_manager_settings.inner_sort,
-                .action = action_favouritesManagerInnerSort},
-            "Choose how games are ordered inside\n"
-            "each system group.");
-
-        list_addItemWithInfoNote(
-            &_menu_favourites_manager,
-            (ListItem){
-                .label = "Remove duplicates",
-                .item_type = TOGGLE,
-                .value =
-                    favourites_manager_settings.remove_duplicates,
-                .action =
-                    action_favouritesManagerRemoveDuplicates},
-            "Remove entries that point to the same game.");
-
-        list_addItemWithInfoNote(
-            &_menu_favourites_manager,
-            (ListItem){
-                .label = "Remove missing games",
-                .item_type = TOGGLE,
-                .value = favourites_manager_settings.remove_missing,
-                .action = action_favouritesManagerRemoveMissing},
-            "Remove favourites whose ROM file no longer exists.");
-
-        list_addItemWithInfoNote(
-            &_menu_favourites_manager,
-            (ListItem){
-                .label = "Repair box art",
-                .item_type = TOGGLE,
-                .value = favourites_manager_settings.repair_box_art,
-                .action = action_favouritesManagerRepairBoxArt},
-            "Repair missing or stale favourite image paths.");
+            "Choose the overall favorites order.");
 
         list_addItemWithInfoNote(
             &_menu_favourites_manager,
@@ -643,24 +663,24 @@ void menu_favouritesManager(void *_)
             (ListItem){
                 .label = "Preview changes",
                 .action = action_favouritesManagerPreview},
-            "Read and analyse favourite.json without\n"
-            "changing it.");
+            "Show what the configured rules would\n"
+            "change without writing the file.");
 
         list_addItemWithInfoNote(
             &_menu_favourites_manager,
             (ListItem){
                 .label = "Apply changes",
                 .action = action_favouritesManagerApply},
-            "Apply the selected sorting and cleanup\n"
-            "rules to favourite.json.");
+            "Apply the configured sorting and cleanup\n"
+            "rules to the favorites list.");
 
         list_addItemWithInfoNote(
             &_menu_favourites_manager,
             (ListItem){
-                .label = "Reset settings",
-                .action = action_favouritesManagerReset},
-            "Restore the favourites manager defaults.\n"
-            "The favourites list is not erased.");
+                .label = "Advanced...",
+                .action = menu_favouritesManagerAdvanced},
+            "Configure cleanup rules, restore a backup,\n"
+            "or reset the manager settings.");
     }
 
     menu_stack[++menu_level] = &_menu_favourites_manager;

@@ -630,6 +630,72 @@ static void action_favouritesManagerPreview(void *pointer)
         false);
 }
 
+static void action_favouritesManagerRestoreBackup(void *pointer)
+{
+    (void)pointer;
+
+    if (!exists(FAVOURITES_BACKUP_PATH)) {
+        __showInfoDialog(
+            "Restore last backup",
+            "No favorites backup is available.");
+        return;
+    }
+
+    char *backup_contents =
+        file_read(FAVOURITES_BACKUP_PATH);
+
+    if (backup_contents == NULL) {
+        __showInfoDialog(
+            "Restore last backup",
+            "Could not read the favorites backup.");
+        return;
+    }
+
+    FILE *file = fopen(FAVOURITES_TEMP_PATH, "w");
+
+    if (file == NULL) {
+        free(backup_contents);
+        __showInfoDialog(
+            "Restore last backup",
+            "Could not prepare the restored file.");
+        return;
+    }
+
+    size_t content_length = strlen(backup_contents);
+
+    bool success =
+        fwrite(
+            backup_contents,
+            1,
+            content_length,
+            file) == content_length &&
+        fflush(file) == 0 &&
+        fsync(fileno(file)) == 0;
+
+    free(backup_contents);
+
+    if (fclose(file) != 0)
+        success = false;
+
+    if (!success ||
+        rename(
+            FAVOURITES_TEMP_PATH,
+            FAVORITES_PATH) != 0) {
+        remove(FAVOURITES_TEMP_PATH);
+
+        __showInfoDialog(
+            "Restore last backup",
+            "Could not restore the favorites backup.");
+        return;
+    }
+
+    sync();
+
+    __showInfoDialog(
+        "Restore last backup",
+        "The previous favorites list was restored.");
+}
+
 static void action_favouritesManagerApply(void *pointer)
 {
     (void)pointer;
