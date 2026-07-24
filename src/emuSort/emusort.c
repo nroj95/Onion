@@ -19,7 +19,7 @@
 #include <string.h>
 #include <unistd.h>
 
-#define HIDE_SPLASH_FLAG "/mnt/SDCARD/App/EmuSort/hide_splash"
+#define HIDE_SPLASH_FLAG "/mnt/SDCARD/Saves/CurrentProfile/config/.emusortHideSplash"
 #define EMU_DIR "/mnt/SDCARD/Emu"
 #define MAX_EMU_COUNT 200
 #define MAX_LABEL_LEN 100

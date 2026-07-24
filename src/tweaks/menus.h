@@ -572,7 +572,7 @@ void menu_userInterface(void *_)
     settings.blue_light_state = config_flag_get(".blfOn");
     all_changed = true;
     if (!_menu_user_interface._created) {
-        _menu_user_interface = list_createWithTitle(6, LIST_SMALL, "Appearance");
+        _menu_user_interface = list_createWithTitle(7, LIST_SMALL, "Appearance");
         list_addItemWithInfoNote(&_menu_user_interface,
                                  (ListItem){
                                      .label = "Show recents",
@@ -613,6 +613,11 @@ void menu_userInterface(void *_)
                      (ListItem){
                          .label = "Icons packs...",
                          .action = menu_icons});
+        list_addItemWithInfoNote(&_menu_user_interface,
+                                 (ListItem){
+                                     .label = "Emulator ordering...",
+                                     .action = action_launchEmuSort},
+                                 "Change the order of systems shown in Games.");
     }
     menu_stack[++menu_level] = &_menu_user_interface;
     header_changed = true;
