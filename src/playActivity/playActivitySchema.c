@@ -253,6 +253,172 @@ int play_activity_identity_find_rom_id(
     return rom_id;
 }
 
+
+bool play_activity_identity_merge_roms(
+    sqlite3 *database,
+    int survivor_rom_id,
+    int redundant_rom_id,
+    const RomContentIdentity *identity,
+    int64_t modified_time,
+    const char *redundant_file_path,
+    const char *current_file_path
+)
+{
+    if (database == NULL ||
+        survivor_rom_id < 0 ||
+        redundant_rom_id < 0 ||
+        survivor_rom_id == redundant_rom_id ||
+        identity == NULL ||
+        identity->type[0] == '\0' ||
+        identity->value[0] == '\0') {
+        return false;
+    }
+
+    if (sqlite3_exec(
+            database,
+            "BEGIN IMMEDIATE;",
+            NULL,
+            NULL,
+            NULL) != SQLITE_OK) {
+        return false;
+    }
+
+    bool success = true;
+    sqlite3_stmt *statement = NULL;
+
+    const char *move_activity_sql =
+        "UPDATE play_activity "
+        "SET rom_id = ?1 "
+        "WHERE rom_id = ?2;";
+
+    if (sqlite3_prepare_v2(
+            database,
+            move_activity_sql,
+            -1,
+            &statement,
+            NULL) != SQLITE_OK) {
+        success = false;
+    }
+    else {
+        sqlite3_bind_int(statement, 1, survivor_rom_id);
+        sqlite3_bind_int(statement, 2, redundant_rom_id);
+        success = sqlite3_step(statement) == SQLITE_DONE;
+    }
+
+    sqlite3_finalize(statement);
+    statement = NULL;
+
+    const char *move_history_sql =
+        "UPDATE rom_path_history "
+        "SET rom_id = ?1 "
+        "WHERE rom_id = ?2;";
+
+    if (success &&
+        sqlite3_prepare_v2(
+            database,
+            move_history_sql,
+            -1,
+            &statement,
+            NULL) != SQLITE_OK) {
+        success = false;
+    }
+    else if (success) {
+        sqlite3_bind_int(statement, 1, survivor_rom_id);
+        sqlite3_bind_int(statement, 2, redundant_rom_id);
+        success = sqlite3_step(statement) == SQLITE_DONE;
+    }
+
+    sqlite3_finalize(statement);
+    statement = NULL;
+
+    const char *delete_identities_sql =
+        "DELETE FROM rom_identity "
+        "WHERE rom_id = ?1 OR rom_id = ?2;";
+
+    if (success &&
+        sqlite3_prepare_v2(
+            database,
+            delete_identities_sql,
+            -1,
+            &statement,
+            NULL) != SQLITE_OK) {
+        success = false;
+    }
+    else if (success) {
+        sqlite3_bind_int(statement, 1, survivor_rom_id);
+        sqlite3_bind_int(statement, 2, redundant_rom_id);
+        success = sqlite3_step(statement) == SQLITE_DONE;
+    }
+
+    sqlite3_finalize(statement);
+    statement = NULL;
+
+    const char *delete_rom_sql =
+        "DELETE FROM rom "
+        "WHERE id = ?1;";
+
+    if (success &&
+        sqlite3_prepare_v2(
+            database,
+            delete_rom_sql,
+            -1,
+            &statement,
+            NULL) != SQLITE_OK) {
+        success = false;
+    }
+    else if (success) {
+        sqlite3_bind_int(statement, 1, redundant_rom_id);
+        success = sqlite3_step(statement) == SQLITE_DONE;
+    }
+
+    sqlite3_finalize(statement);
+
+    if (success &&
+        redundant_file_path != NULL &&
+        current_file_path != NULL &&
+        redundant_file_path[0] != '\0' &&
+        current_file_path[0] != '\0' &&
+        strcmp(redundant_file_path, current_file_path) != 0) {
+        success = play_activity_identity_record_path_change(
+            database,
+            survivor_rom_id,
+            redundant_file_path,
+            current_file_path
+        );
+    }
+
+    if (success) {
+        success = play_activity_identity_store(
+            database,
+            survivor_rom_id,
+            identity,
+            modified_time
+        );
+    }
+
+    if (success) {
+        success = sqlite3_exec(
+            database,
+            "COMMIT;",
+            NULL,
+            NULL,
+            NULL
+        ) == SQLITE_OK;
+    }
+
+    if (!success) {
+        sqlite3_exec(
+            database,
+            "ROLLBACK;",
+            NULL,
+            NULL,
+            NULL
+        );
+    }
+
+    return success;
+}
+
 bool play_activity_identity_record_path_change(
     sqlite3 *database,
     int rom_id,

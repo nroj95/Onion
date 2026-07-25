@@ -187,42 +187,82 @@ static int resolve_rom_for_start(const char *rom_path)
         return ROM_NOT_FOUND;
 
     int rom_id = __db_get_rom_id_by_path(rom_path);
+    int identity_rom_id = ROM_NOT_FOUND;
+    bool identity_stored = false;
 
-    if (rom_id != ROM_NOT_FOUND) {
-        update_rom_for_path(rom_id, rom_path);
-    }
-    else if (has_identity) {
-        rom_id = play_activity_identity_find_rom_id(
+    if (has_identity) {
+        identity_rom_id = play_activity_identity_find_rom_id(
             play_activity_db,
             &identity
         );
+    }
 
-        if (rom_id != ROM_NOT_FOUND) {
-            char old_file_path[PATH_MAX] = "";
-            char new_file_path[PATH_MAX] = "";
+    if (rom_id != ROM_NOT_FOUND) {
+        update_rom_for_path(rom_id, rom_path);
+
+        if (identity_rom_id != ROM_NOT_FOUND &&
+            identity_rom_id != rom_id) {
+            char redundant_file_path[PATH_MAX] = "";
+            char current_file_path[PATH_MAX] = "";
 
             get_stored_rom_path(
-                rom_id,
-                old_file_path,
-                sizeof(old_file_path)
+                identity_rom_id,
+                redundant_file_path,
+                sizeof(redundant_file_path)
             );
 
-            __ensure_rel_path(new_file_path, rom_path);
-            update_rom_for_path(rom_id, rom_path);
+            __ensure_rel_path(current_file_path, rom_path);
 
-            play_activity_identity_record_path_change(
+            identity_stored = play_activity_identity_merge_roms(
                 play_activity_db,
                 rom_id,
-                old_file_path,
-                new_file_path
+                identity_rom_id,
+                &identity,
+                modified_time,
+                redundant_file_path,
+                current_file_path
             );
+
+            if (!identity_stored) {
+                fprintf(
+                    stderr,
+                    "Warning: unable to merge duplicate activity rows: "
+                    "%d and %d\n",
+                    rom_id,
+                    identity_rom_id
+                );
+            }
         }
+    }
+    else if (identity_rom_id != ROM_NOT_FOUND) {
+        char old_file_path[PATH_MAX] = "";
+        char new_file_path[PATH_MAX] = "";
+
+        rom_id = identity_rom_id;
+
+        get_stored_rom_path(
+            rom_id,
+            old_file_path,
+            sizeof(old_file_path)
+        );
+
+        __ensure_rel_path(new_file_path, rom_path);
+        update_rom_for_path(rom_id, rom_path);
+
+        play_activity_identity_record_path_change(
+            play_activity_db,
+            rom_id,
+            old_file_path,
+            new_file_path
+        );
     }
 
     if (rom_id == ROM_NOT_FOUND)
         rom_id = create_rom_for_path(rom_path);
 
-    if (rom_id != ROM_NOT_FOUND && has_identity) {
+    if (rom_id != ROM_NOT_FOUND &&
+        has_identity &&
+        !identity_stored) {
         if (!play_activity_identity_store(
                 play_activity_db,
                 rom_id,
