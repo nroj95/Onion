@@ -104,3 +104,93 @@ bool play_activity_identity_schema_ensure(sqlite3 *database)
 
     return false;
 }
+
+bool play_activity_identity_store(
+    sqlite3 *database,
+    int rom_id,
+    const RomContentIdentity *identity,
+    int64_t modified_time
+)
+{
+    if (database == NULL ||
+        rom_id < 0 ||
+        identity == NULL ||
+        identity->type[0] == '\0' ||
+        identity->value[0] == '\0') {
+        return false;
+    }
+
+    const char *sql =
+        "INSERT INTO rom_identity("
+        "    rom_id,"
+        "    identity_type,"
+        "    identity_value,"
+        "    content_size,"
+        "    modified_time,"
+        "    updated_at"
+        ") VALUES(?1, ?2, ?3, ?4, ?5, strftime('%s', 'now')) "
+        "ON CONFLICT(rom_id) DO UPDATE SET "
+        "    identity_type = excluded.identity_type,"
+        "    identity_value = excluded.identity_value,"
+        "    content_size = excluded.content_size,"
+        "    modified_time = excluded.modified_time,"
+        "    updated_at = excluded.updated_at;";
+
+    sqlite3_stmt *statement = NULL;
+
+    if (sqlite3_prepare_v2(
+            database,
+            sql,
+            -1,
+            &statement,
+            NULL
+        ) != SQLITE_OK) {
+        fprintf(
+            stderr,
+            "activity identity prepare error: %s\n",
+            sqlite3_errmsg(database)
+        );
+        return false;
+    }
+
+    sqlite3_bind_int(statement, 1, rom_id);
+    sqlite3_bind_text(
+        statement,
+        2,
+        identity->type,
+        -1,
+        SQLITE_TRANSIENT
+    );
+    sqlite3_bind_text(
+        statement,
+        3,
+        identity->value,
+        -1,
+        SQLITE_TRANSIENT
+    );
+    sqlite3_bind_int64(
+        statement,
+        4,
+        (sqlite3_int64)identity->content_size
+    );
+    sqlite3_bind_int64(
+        statement,
+        5,
+        (sqlite3_int64)modified_time
+    );
+
+    int result = sqlite3_step(statement);
+
+    if (result != SQLITE_DONE) {
+        fprintf(
+            stderr,
+            "activity identity store error for rom %d: %s\n",
+            rom_id,
+            sqlite3_errmsg(database)
+        );
+    }
+
+    sqlite3_finalize(statement);
+
+    return result == SQLITE_DONE;
+}

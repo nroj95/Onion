@@ -2,22 +2,33 @@
 #define PLAY_ACTIVITY_SCHEMA_H
 
 #include <stdbool.h>
+#include <stdint.h>
+
 #include <sqlite3/sqlite3.h>
+
+#include "./playActivityIdentity.h"
 
 /* =============================================================================
  * purpose:
- * initialize and version the activity tracker identity schema.
+ * initialize and update the activity tracker's identity data.
  *
  * key behavior:
  * - adds identity tables to onion's existing activity database.
  * - leaves the original rom and play_activity tables unchanged.
- * - uses idempotent create statements so initialization is safe to repeat.
- * - records a schema version for future migrations.
+ * - stores one current content identity for each stable rom.id.
+ * - reports identity conflicts without merging activity rows.
  * =============================================================================
  */
 
 #define PLAY_ACTIVITY_IDENTITY_SCHEMA_VERSION 1
 
 bool play_activity_identity_schema_ensure(sqlite3 *database);
+
+bool play_activity_identity_store(
+    sqlite3 *database,
+    int rom_id,
+    const RomContentIdentity *identity,
+    int64_t modified_time
+);
 
 #endif
