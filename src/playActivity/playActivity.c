@@ -33,7 +33,7 @@ static bool ensure_identity_schema(void)
     return schema_ready;
 }
 
-static void adopt_raw_identity(
+static void adopt_content_identity(
     int rom_id,
     const char *rom_path
 )
@@ -43,15 +43,29 @@ static void adopt_raw_identity(
     if (!rom_identity_context_build(rom_path, &context))
         return;
 
-    if (context.kind != ROM_IDENTITY_KIND_RAW)
+    if (context.kind != ROM_IDENTITY_KIND_RAW &&
+        context.kind != ROM_IDENTITY_KIND_ZIP) {
         return;
+    }
 
     RomContentIdentity identity;
 
-    if (!rom_identity_calculate_raw(rom_path, &identity)) {
+    bool identity_calculated =
+        context.kind == ROM_IDENTITY_KIND_RAW
+            ? rom_identity_calculate_raw(
+                  rom_path,
+                  &identity
+              )
+            : rom_identity_calculate_zip(
+                  rom_path,
+                  &identity
+              );
+
+    if (!identity_calculated) {
         fprintf(
             stderr,
-            "Warning: unable to fingerprint raw rom: %s\n",
+            "Warning: unable to fingerprint %s rom: %s\n",
+            rom_identity_kind_name(context.kind),
             rom_path
         );
         return;
@@ -62,7 +76,7 @@ static void adopt_raw_identity(
     if (stat(rom_path, &file_status) != 0) {
         fprintf(
             stderr,
-            "Warning: unable to read raw rom metadata: %s\n",
+            "Warning: unable to read rom metadata: %s\n",
             rom_path
         );
         return;
@@ -85,7 +99,7 @@ static void adopt_raw_identity(
     if (!stored) {
         fprintf(
             stderr,
-            "Warning: unable to store raw rom identity: %s\n",
+            "Warning: unable to store rom identity: %s\n",
             rom_path
         );
     }
@@ -109,7 +123,7 @@ static void play_activity_start_with_identity(
     if (rom_id == ROM_NOT_FOUND)
         exit(EXIT_FAILURE);
 
-    adopt_raw_identity(rom_id, rom_file_path);
+    adopt_content_identity(rom_id, rom_file_path);
 
     char *sql = sqlite3_mprintf(
         "INSERT INTO play_activity(rom_id) VALUES(%d);",

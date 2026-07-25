@@ -53,6 +53,11 @@ bool rom_identity_calculate_raw(
     RomContentIdentity *identity
 );
 
+bool rom_identity_calculate_zip(
+    const char *rom_path,
+    RomContentIdentity *identity
+);
+
 const char *rom_identity_kind_name(RomIdentityKind kind);
 
 #endif

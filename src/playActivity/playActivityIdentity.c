@@ -4,9 +4,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/wait.h>
 
 #define CMD_TO_RUN_PATH "/mnt/SDCARD/.tmp_update/cmd_to_run.sh"
 #define ROMS_PATH_PREFIX "/mnt/SDCARD/Roms/"
+#define SEVEN_ZIP_PATH "/mnt/SDCARD/.tmp_update/bin/7z"
 
 /* =============================================================================
  * purpose:
@@ -225,8 +227,8 @@ static void initialize_crc32_table(uint32_t table[256])
     }
 }
 
-static bool calculate_file_crc32(
-    const char *file_path,
+static bool calculate_stream_crc32(
+    FILE *stream,
     uint32_t *checksum_out,
     uint64_t *size_out
 )
@@ -234,26 +236,27 @@ static bool calculate_file_crc32(
     static uint32_t crc32_table[256];
     static bool crc32_table_ready = false;
 
+    if (stream == NULL ||
+        checksum_out == NULL ||
+        size_out == NULL) {
+        return false;
+    }
+
     if (!crc32_table_ready) {
         initialize_crc32_table(crc32_table);
         crc32_table_ready = true;
     }
 
-    FILE *rom_file = fopen(file_path, "rb");
-    if (rom_file == NULL)
-        return false;
-
     unsigned char buffer[64 * 1024];
     uint32_t checksum = UINT32_MAX;
     uint64_t total_size = 0;
-    bool read_succeeded = true;
 
     while (true) {
         size_t bytes_read = fread(
             buffer,
             1,
             sizeof(buffer),
-            rom_file
+            stream
         );
 
         for (size_t index = 0; index < bytes_read; index++) {
@@ -267,22 +270,252 @@ static bool calculate_file_crc32(
         total_size += bytes_read;
 
         if (bytes_read < sizeof(buffer)) {
-            if (ferror(rom_file))
-                read_succeeded = false;
+            if (ferror(stream))
+                return false;
 
             break;
         }
     }
 
-    fclose(rom_file);
-
-    if (!read_succeeded)
-        return false;
-
     *checksum_out = checksum ^ UINT32_MAX;
     *size_out = total_size;
 
     return true;
+}
+
+static bool calculate_file_crc32(
+    const char *file_path,
+    uint32_t *checksum_out,
+    uint64_t *size_out
+)
+{
+    FILE *rom_file = fopen(file_path, "rb");
+    if (rom_file == NULL)
+        return false;
+
+    bool calculated = calculate_stream_crc32(
+        rom_file,
+        checksum_out,
+        size_out
+    );
+
+    fclose(rom_file);
+
+    return calculated;
+}
+
+static bool append_shell_quoted(
+    char *destination,
+    size_t destination_size,
+    const char *value
+)
+{
+    size_t used = strlen(destination);
+
+    if (used + 2 >= destination_size)
+        return false;
+
+    destination[used++] = '\'';
+    destination[used] = '\0';
+
+    for (size_t index = 0; value[index] != '\0'; index++) {
+        const char *escaped =
+            value[index] == '\''
+                ? "'\\''"
+                : NULL;
+
+        if (escaped != NULL) {
+            size_t escaped_length = strlen(escaped);
+
+            if (used + escaped_length >= destination_size)
+                return false;
+
+            memcpy(
+                destination + used,
+                escaped,
+                escaped_length
+            );
+
+            used += escaped_length;
+        }
+        else {
+            if (used + 1 >= destination_size)
+                return false;
+
+            destination[used++] = value[index];
+        }
+
+        destination[used] = '\0';
+    }
+
+    if (used + 2 > destination_size)
+        return false;
+
+    destination[used++] = '\'';
+    destination[used] = '\0';
+
+    return true;
+}
+
+static void trim_line_end(char *text)
+{
+    size_t length = strlen(text);
+
+    while (length > 0 &&
+           (text[length - 1] == '\n' ||
+            text[length - 1] == '\r')) {
+        text[--length] = '\0';
+    }
+}
+
+static bool get_single_zip_member(
+    const char *archive_path,
+    char *member_out,
+    size_t member_out_size
+)
+{
+    char command[PATH_MAX * 2] = "";
+
+    snprintf(
+        command,
+        sizeof(command),
+        "%s l -slt ",
+        SEVEN_ZIP_PATH
+    );
+
+    if (!append_shell_quoted(
+            command,
+            sizeof(command),
+            archive_path)) {
+        return false;
+    }
+
+    strcat(command, " 2>/dev/null");
+
+    FILE *listing = popen(command, "r");
+    if (listing == NULL)
+        return false;
+
+    char line[PATH_MAX + 64];
+    char current_path[PATH_MAX] = "";
+    bool current_is_file = false;
+    bool reading_members = false;
+    int file_count = 0;
+
+    while (fgets(line, sizeof(line), listing) != NULL) {
+        trim_line_end(line);
+
+        if (strcmp(line, "----------") == 0) {
+            reading_members = true;
+            continue;
+        }
+
+        if (!reading_members)
+            continue;
+
+        if (line[0] == '\0') {
+            if (current_is_file && current_path[0] != '\0') {
+                file_count++;
+
+                if (file_count == 1) {
+                    snprintf(
+                        member_out,
+                        member_out_size,
+                        "%s",
+                        current_path
+                    );
+                }
+            }
+
+            current_path[0] = '\0';
+            current_is_file = false;
+            continue;
+        }
+
+        if (strncmp(line, "Path = ", 7) == 0) {
+            snprintf(
+                current_path,
+                sizeof(current_path),
+                "%s",
+                line + 7
+            );
+        }
+        else if (strcmp(line, "Folder = -") == 0) {
+            current_is_file = true;
+        }
+    }
+
+    if (current_is_file && current_path[0] != '\0') {
+        file_count++;
+
+        if (file_count == 1) {
+            snprintf(
+                member_out,
+                member_out_size,
+                "%s",
+                current_path
+            );
+        }
+    }
+
+    int status = pclose(listing);
+
+    return status != -1 &&
+           WIFEXITED(status) &&
+           WEXITSTATUS(status) == 0 &&
+           file_count == 1;
+}
+
+static bool calculate_zip_member_crc32(
+    const char *archive_path,
+    const char *member_path,
+    uint32_t *checksum_out,
+    uint64_t *size_out
+)
+{
+    char command[PATH_MAX * 3] = "";
+
+    snprintf(
+        command,
+        sizeof(command),
+        "%s x -so ",
+        SEVEN_ZIP_PATH
+    );
+
+    if (!append_shell_quoted(
+            command,
+            sizeof(command),
+            archive_path)) {
+        return false;
+    }
+
+    strcat(command, " ");
+
+    if (!append_shell_quoted(
+            command,
+            sizeof(command),
+            member_path)) {
+        return false;
+    }
+
+    strcat(command, " 2>/dev/null");
+
+    FILE *stream = popen(command, "r");
+    if (stream == NULL)
+        return false;
+
+    bool calculated = calculate_stream_crc32(
+        stream,
+        checksum_out,
+        size_out
+    );
+
+    int status = pclose(stream);
+
+    return calculated &&
+           status != -1 &&
+           WIFEXITED(status) &&
+           WEXITSTATUS(status) == 0;
 }
 
 bool rom_identity_calculate_raw(
@@ -300,6 +533,55 @@ bool rom_identity_calculate_raw(
 
     if (!calculate_file_crc32(
             rom_path,
+            &checksum,
+            &content_size)) {
+        return false;
+    }
+
+    snprintf(
+        identity->type,
+        sizeof(identity->type),
+        "%s",
+        "crc32"
+    );
+
+    snprintf(
+        identity->value,
+        sizeof(identity->value),
+        "%08x",
+        checksum
+    );
+
+    identity->content_size = content_size;
+
+    return true;
+}
+
+bool rom_identity_calculate_zip(
+    const char *rom_path,
+    RomContentIdentity *identity
+)
+{
+    if (rom_path == NULL || identity == NULL)
+        return false;
+
+    memset(identity, 0, sizeof(*identity));
+
+    char member_path[PATH_MAX];
+
+    if (!get_single_zip_member(
+            rom_path,
+            member_path,
+            sizeof(member_path))) {
+        return false;
+    }
+
+    uint32_t checksum = 0;
+    uint64_t content_size = 0;
+
+    if (!calculate_zip_member_crc32(
+            rom_path,
+            member_path,
             &checksum,
             &content_size)) {
         return false;
