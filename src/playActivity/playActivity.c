@@ -1,4 +1,5 @@
 #include "./playActivity.h"
+#include "./playActivitySchema.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -15,6 +16,21 @@ void printUsage()
            "       playActivity fix_paths        -> Change all absolute paths to relative paths\n");
 }
 
+static bool ensure_identity_schema(void)
+{
+    play_activity_db_open();
+
+    if (play_activity_db == NULL)
+        return false;
+
+    bool schema_ready =
+        play_activity_identity_schema_ensure(play_activity_db);
+
+    play_activity_db_close();
+
+    return schema_ready;
+}
+
 int main(int argc, char *argv[])
 {
     log_setName("play_activity");
@@ -22,6 +38,11 @@ int main(int argc, char *argv[])
     if (argc <= 1) {
         printUsage();
         return EXIT_SUCCESS;
+    }
+
+    if (!ensure_identity_schema()) {
+        fprintf(stderr, "Error: unable to initialize identity schema\n");
+        return EXIT_FAILURE;
     }
 
     for (int i = 1; i < argc; i++) {
