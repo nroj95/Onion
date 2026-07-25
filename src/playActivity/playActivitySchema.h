@@ -31,4 +31,16 @@ bool play_activity_identity_store(
     int64_t modified_time
 );
 
+int play_activity_identity_find_rom_id(
+    sqlite3 *database,
+    const RomContentIdentity *identity
+);
+
+bool play_activity_identity_record_path_change(
+    sqlite3 *database,
+    int rom_id,
+    const char *old_file_path,
+    const char *new_file_path
+);
+
 #endif

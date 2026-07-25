@@ -33,42 +33,35 @@ static bool ensure_identity_schema(void)
     return schema_ready;
 }
 
-static void adopt_content_identity(
-    int rom_id,
-    const char *rom_path
+static bool calculate_content_identity(
+    const char *rom_path,
+    RomContentIdentity *identity,
+    int64_t *modified_time_out
 )
 {
     RomIdentityContext context;
 
     if (!rom_identity_context_build(rom_path, &context))
-        return;
+        return false;
 
-    if (context.kind != ROM_IDENTITY_KIND_RAW &&
-        context.kind != ROM_IDENTITY_KIND_ZIP) {
-        return;
+    if (context.kind == ROM_IDENTITY_KIND_ARCADE ||
+        context.kind == ROM_IDENTITY_KIND_UNSUPPORTED) {
+        return false;
     }
 
-    RomContentIdentity identity;
-
-    bool identity_calculated =
+    bool calculated =
         context.kind == ROM_IDENTITY_KIND_RAW
-            ? rom_identity_calculate_raw(
-                  rom_path,
-                  &identity
-              )
-            : rom_identity_calculate_zip(
-                  rom_path,
-                  &identity
-              );
+            ? rom_identity_calculate_raw(rom_path, identity)
+            : rom_identity_calculate_zip(rom_path, identity);
 
-    if (!identity_calculated) {
+    if (!calculated) {
         fprintf(
             stderr,
             "Warning: unable to fingerprint %s rom: %s\n",
             rom_identity_kind_name(context.kind),
             rom_path
         );
-        return;
+        return false;
     }
 
     struct stat file_status;
@@ -79,30 +72,173 @@ static void adopt_content_identity(
             "Warning: unable to read rom metadata: %s\n",
             rom_path
         );
+        return false;
+    }
+
+    *modified_time_out = (int64_t)file_status.st_mtime;
+
+    return true;
+}
+
+static void update_rom_for_path(
+    int rom_id,
+    const char *rom_path
+)
+{
+    CacheDBItem *cache_item = cache_db_find(rom_path);
+
+    if (cache_item != NULL) {
+        __db_update_rom_from_cache(rom_id, cache_item);
+        free(cache_item);
         return;
     }
+
+    char *rom_name =
+        file_removeExtension(file_basename(rom_path));
+
+    __db_update_rom(
+        rom_id,
+        "",
+        rom_name,
+        rom_path,
+        ""
+    );
+
+    free(rom_name);
+}
+
+static int create_rom_for_path(const char *rom_path)
+{
+    CacheDBItem *cache_item = cache_db_find(rom_path);
+
+    if (cache_item != NULL) {
+        int rom_id = __db_insert_rom_from_cache(cache_item);
+        free(cache_item);
+        return rom_id;
+    }
+
+    char *rom_name =
+        file_removeExtension(file_basename(rom_path));
+
+    int rom_id = __db_insert_rom(
+        "",
+        rom_name,
+        rom_path,
+        ""
+    );
+
+    free(rom_name);
+
+    return rom_id;
+}
+
+static bool get_stored_rom_path(
+    int rom_id,
+    char *file_path_out,
+    size_t file_path_out_size
+)
+{
+    sqlite3_stmt *statement = play_activity_db_prepare(
+        "SELECT file_path FROM rom WHERE id = ?1 LIMIT 1;"
+    );
+
+    if (statement == NULL)
+        return false;
+
+    sqlite3_bind_int(statement, 1, rom_id);
+
+    bool found = false;
+
+    if (sqlite3_step(statement) == SQLITE_ROW) {
+        const unsigned char *stored_path =
+            sqlite3_column_text(statement, 0);
+
+        if (stored_path != NULL) {
+            snprintf(
+                file_path_out,
+                file_path_out_size,
+                "%s",
+                (const char *)stored_path
+            );
+
+            found = true;
+        }
+    }
+
+    sqlite3_finalize(statement);
+
+    return found;
+}
+
+static int resolve_rom_for_start(const char *rom_path)
+{
+    RomContentIdentity identity;
+    int64_t modified_time = 0;
+
+    bool has_identity = calculate_content_identity(
+        rom_path,
+        &identity,
+        &modified_time
+    );
 
     play_activity_db_open();
 
     if (play_activity_db == NULL)
-        return;
+        return ROM_NOT_FOUND;
 
-    bool stored = play_activity_identity_store(
-        play_activity_db,
-        rom_id,
-        &identity,
-        (int64_t)file_status.st_mtime
-    );
+    int rom_id = __db_get_rom_id_by_path(rom_path);
+
+    if (rom_id != ROM_NOT_FOUND) {
+        update_rom_for_path(rom_id, rom_path);
+    }
+    else if (has_identity) {
+        rom_id = play_activity_identity_find_rom_id(
+            play_activity_db,
+            &identity
+        );
+
+        if (rom_id != ROM_NOT_FOUND) {
+            char old_file_path[PATH_MAX] = "";
+            char new_file_path[PATH_MAX] = "";
+
+            get_stored_rom_path(
+                rom_id,
+                old_file_path,
+                sizeof(old_file_path)
+            );
+
+            __ensure_rel_path(new_file_path, rom_path);
+            update_rom_for_path(rom_id, rom_path);
+
+            play_activity_identity_record_path_change(
+                play_activity_db,
+                rom_id,
+                old_file_path,
+                new_file_path
+            );
+        }
+    }
+
+    if (rom_id == ROM_NOT_FOUND)
+        rom_id = create_rom_for_path(rom_path);
+
+    if (rom_id != ROM_NOT_FOUND && has_identity) {
+        if (!play_activity_identity_store(
+                play_activity_db,
+                rom_id,
+                &identity,
+                modified_time)) {
+            fprintf(
+                stderr,
+                "Warning: unable to store rom identity: %s\n",
+                rom_path
+            );
+        }
+    }
 
     play_activity_db_close();
 
-    if (!stored) {
-        fprintf(
-            stderr,
-            "Warning: unable to store rom identity: %s\n",
-            rom_path
-        );
-    }
+    return rom_id;
 }
 
 static void play_activity_start_with_identity(
@@ -114,16 +250,10 @@ static void play_activity_start_with_identity(
         rom_file_path
     );
 
-    int rom_id =
-        play_activity_transaction_rom_find_by_file_path(
-            rom_file_path,
-            true
-        );
+    int rom_id = resolve_rom_for_start(rom_file_path);
 
     if (rom_id == ROM_NOT_FOUND)
         exit(EXIT_FAILURE);
-
-    adopt_content_identity(rom_id, rom_file_path);
 
     char *sql = sqlite3_mprintf(
         "INSERT INTO play_activity(rom_id) VALUES(%d);",
