@@ -1,4 +1,6 @@
 #include "./playActivity.h"
+#include "./playActivityAssets.h"
+#include "./playActivityHistory.h"
 #include "./playActivityIdentity.h"
 #include "./playActivitySchema.h"
 
@@ -6,6 +8,180 @@
 #include <stdlib.h>
 #include <sys/stat.h>
 #include <string.h>
+
+
+#define PLAY_ACTIVITY_HISTORY_PATH \
+    "/mnt/SDCARD/Saves/CurrentProfile/lists/content_history.lpl"
+
+#define PLAY_ACTIVITY_SAVES_ROOT \
+    "/mnt/SDCARD/Saves/CurrentProfile/saves"
+
+#define PLAY_ACTIVITY_STATES_ROOT \
+    "/mnt/SDCARD/Saves/CurrentProfile/states"
+
+static void process_pending_asset_migration(
+    const char *rom_path
+)
+{
+    if (rom_path == NULL || rom_path[0] == '\0')
+        return;
+
+    char old_file_path[PATH_MAX] = "";
+    char new_file_path[PATH_MAX] = "";
+
+    play_activity_db_open();
+
+    if (play_activity_db == NULL)
+        return;
+
+    int rom_id = __db_get_rom_id_by_path(rom_path);
+
+    bool migration_found =
+        rom_id != ROM_NOT_FOUND &&
+        play_activity_asset_migration_load(
+            play_activity_db,
+            rom_id,
+            old_file_path,
+            sizeof(old_file_path),
+            new_file_path,
+            sizeof(new_file_path)
+        );
+
+    play_activity_db_close();
+
+    if (!migration_found)
+        return;
+
+    char core_path[PATH_MAX] = "";
+
+    if (!play_activity_history_find_core_path(
+            PLAY_ACTIVITY_HISTORY_PATH,
+            rom_path,
+            core_path,
+            sizeof(core_path)
+        )) {
+        fprintf(
+            stderr,
+            "Warning: unable to resolve launched core for asset migration: %s\n",
+            rom_path
+        );
+        return;
+    }
+
+    char core_name[256] = "";
+
+    if (!play_activity_asset_core_name(
+            core_path,
+            core_name,
+            sizeof(core_name)
+        )) {
+        fprintf(
+            stderr,
+            "Warning: unable to resolve corename for asset migration: %s\n",
+            core_path
+        );
+        return;
+    }
+
+    char saves_directory[PATH_MAX];
+    char states_directory[PATH_MAX];
+
+    int saves_written = snprintf(
+        saves_directory,
+        sizeof(saves_directory),
+        "%s/%s",
+        PLAY_ACTIVITY_SAVES_ROOT,
+        core_name
+    );
+
+    int states_written = snprintf(
+        states_directory,
+        sizeof(states_directory),
+        "%s/%s",
+        PLAY_ACTIVITY_STATES_ROOT,
+        core_name
+    );
+
+    if (saves_written < 0 ||
+        states_written < 0 ||
+        (size_t)saves_written >= sizeof(saves_directory) ||
+        (size_t)states_written >= sizeof(states_directory)) {
+        fprintf(
+            stderr,
+            "Warning: asset migration path is too long for core: %s\n",
+            core_name
+        );
+        return;
+    }
+
+    PlayActivityAssetMigrationResult saves_result;
+    PlayActivityAssetMigrationResult states_result;
+
+    bool saves_complete =
+        play_activity_asset_migrate_directory(
+            saves_directory,
+            old_file_path,
+            new_file_path,
+            &saves_result
+        );
+
+    bool states_complete =
+        play_activity_asset_migrate_directory(
+            states_directory,
+            old_file_path,
+            new_file_path,
+            &states_result
+        );
+
+    if (!saves_complete || !states_complete) {
+        fprintf(
+            stderr,
+            "Warning: asset migration remains pending for rom %d "
+            "(saves: moved=%d missing=%d blocked=%d failed=%d; "
+            "states: moved=%d missing=%d blocked=%d failed=%d)\n",
+            rom_id,
+            saves_result.moved,
+            saves_result.missing,
+            saves_result.blocked,
+            saves_result.failed,
+            states_result.moved,
+            states_result.missing,
+            states_result.blocked,
+            states_result.failed
+        );
+        return;
+    }
+
+    play_activity_db_open();
+
+    if (play_activity_db == NULL)
+        return;
+
+    bool migration_deleted =
+        play_activity_asset_migration_delete(
+            play_activity_db,
+            rom_id
+        );
+
+    play_activity_db_close();
+
+    if (!migration_deleted) {
+        fprintf(
+            stderr,
+            "Warning: unable to clear completed asset migration for rom %d\n",
+            rom_id
+        );
+        return;
+    }
+
+    printf_debug(
+        "Completed asset migration for rom %d "
+        "(saves moved: %d, states moved: %d)\n",
+        rom_id,
+        saves_result.moved,
+        states_result.moved
+    );
+}
 
 void printUsage()
 {
@@ -505,7 +681,10 @@ int main(int argc, char *argv[])
         }
         else if (strcmp(argv[i], "stop") == 0) {
             if (i + 1 < argc) {
-                play_activity_stop(argv[++i]);
+                char *rom_path = argv[++i];
+
+                play_activity_stop(rom_path);
+                process_pending_asset_migration(rom_path);
             }
             else {
                 printf("Error: Missing rom_path argument\n");
