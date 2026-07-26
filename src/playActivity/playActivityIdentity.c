@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 
 #define CMD_TO_RUN_PATH "/mnt/SDCARD/.tmp_update/cmd_to_run.sh"
@@ -931,6 +932,141 @@ static bool calculate_m3u_identity_internal(
     identity->content_size = total_content_size;
 
     return true;
+}
+
+static bool calculate_m3u_source_signature_internal(
+    const char *rom_path,
+    uint64_t *hash,
+    unsigned int depth
+)
+{
+    if (rom_path == NULL ||
+        hash == NULL ||
+        depth > M3U_MAX_NESTING_DEPTH) {
+        return false;
+    }
+
+    FILE *playlist = fopen(rom_path, "r");
+
+    if (playlist == NULL)
+        return false;
+
+    size_t entry_count = 0;
+    char line[PATH_MAX * 2];
+
+    while (fgets(line, sizeof(line), playlist) != NULL) {
+        if (strchr(line, '\n') == NULL && !feof(playlist)) {
+            fclose(playlist);
+            return false;
+        }
+
+        trim_line_end(line);
+
+        char *entry = trim_playlist_entry(line);
+
+        if (entry_count == 0 &&
+            (unsigned char)entry[0] == 0xef &&
+            (unsigned char)entry[1] == 0xbb &&
+            (unsigned char)entry[2] == 0xbf) {
+            entry += 3;
+        }
+
+        if (entry[0] == '\0' || entry[0] == '#')
+            continue;
+
+        char referenced_path[PATH_MAX];
+
+        if (!resolve_playlist_entry_path(
+                rom_path,
+                entry,
+                referenced_path,
+                sizeof(referenced_path))) {
+            fclose(playlist);
+            return false;
+        }
+
+        RomIdentityContext context;
+
+        if (!rom_identity_context_build(
+                referenced_path,
+                &context)) {
+            fclose(playlist);
+            return false;
+        }
+
+        fnv1a64_update_text(hash, referenced_path);
+
+        if (context.kind == ROM_IDENTITY_KIND_M3U) {
+            if (!calculate_m3u_source_signature_internal(
+                    referenced_path,
+                    hash,
+                    depth + 1)) {
+                fclose(playlist);
+                return false;
+            }
+        }
+        else if (context.kind == ROM_IDENTITY_KIND_RAW ||
+                 context.kind == ROM_IDENTITY_KIND_ZIP) {
+            struct stat file_status;
+
+            if (stat(referenced_path, &file_status) != 0) {
+                fclose(playlist);
+                return false;
+            }
+
+            fnv1a64_update_uint64(
+                hash,
+                (uint64_t)file_status.st_size
+            );
+
+            fnv1a64_update_uint64(
+                hash,
+                (uint64_t)file_status.st_mtime
+            );
+        }
+        else {
+            fclose(playlist);
+            return false;
+        }
+
+        entry_count++;
+    }
+
+    bool read_successfully = !ferror(playlist);
+    fclose(playlist);
+
+    return read_successfully && entry_count > 0;
+}
+
+bool rom_identity_calculate_m3u_source_signature(
+    const char *rom_path,
+    char *signature_out,
+    size_t signature_out_size
+)
+{
+    if (rom_path == NULL ||
+        signature_out == NULL ||
+        signature_out_size < 17) {
+        return false;
+    }
+
+    uint64_t hash = UINT64_C(14695981039346656037);
+
+    if (!calculate_m3u_source_signature_internal(
+            rom_path,
+            &hash,
+            0)) {
+        return false;
+    }
+
+    int written = snprintf(
+        signature_out,
+        signature_out_size,
+        "%016llx",
+        (unsigned long long)hash
+    );
+
+    return written == 16;
 }
 
 bool rom_identity_calculate_m3u(

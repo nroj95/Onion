@@ -64,6 +64,12 @@ bool rom_identity_calculate_m3u(
     RomContentIdentity *identity
 );
 
+bool rom_identity_calculate_m3u_source_signature(
+    const char *rom_path,
+    char *signature_out,
+    size_t signature_out_size
+);
+
 const char *rom_identity_kind_name(RomIdentityKind kind);
 
 #endif

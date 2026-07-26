@@ -74,6 +74,13 @@ bool play_activity_identity_schema_ensure(sqlite3 *database)
         "rom_identity_value_index "
         "ON rom_identity(identity_type, identity_value);"
 
+        "CREATE TABLE IF NOT EXISTS rom_identity_source("
+        "    rom_id INTEGER PRIMARY KEY,"
+        "    source_type TEXT NOT NULL,"
+        "    source_signature TEXT NOT NULL,"
+        "    updated_at INTEGER DEFAULT (strftime('%s', 'now'))"
+        ");"
+
         "CREATE TABLE IF NOT EXISTS rom_path_history("
         "    id INTEGER PRIMARY KEY,"
         "    rom_id INTEGER NOT NULL,"
@@ -87,7 +94,7 @@ bool play_activity_identity_schema_ensure(sqlite3 *database)
         "ON rom_path_history(rom_id);"
 
         "INSERT INTO identity_metadata(key, value) "
-        "VALUES('schema_version', '1') "
+        "VALUES('schema_version', '2') "
         "ON CONFLICT(key) DO UPDATE SET value = excluded.value;"
 
         "COMMIT;";
@@ -281,6 +288,220 @@ bool play_activity_identity_load_if_unchanged(
     return found;
 }
 
+bool play_activity_identity_load(
+    sqlite3 *database,
+    int rom_id,
+    RomContentIdentity *identity_out
+)
+{
+    if (database == NULL ||
+        rom_id < 0 ||
+        identity_out == NULL) {
+        return false;
+    }
+
+    const char *sql =
+        "SELECT identity_type, identity_value, content_size "
+        "FROM rom_identity "
+        "WHERE rom_id = ?1 "
+        "LIMIT 1;";
+
+    sqlite3_stmt *statement = NULL;
+
+    if (sqlite3_prepare_v2(
+            database,
+            sql,
+            -1,
+            &statement,
+            NULL
+        ) != SQLITE_OK) {
+        return false;
+    }
+
+    sqlite3_bind_int(statement, 1, rom_id);
+
+    bool found = false;
+
+    if (sqlite3_step(statement) == SQLITE_ROW) {
+        const unsigned char *identity_type =
+            sqlite3_column_text(statement, 0);
+
+        const unsigned char *identity_value =
+            sqlite3_column_text(statement, 1);
+
+        if (identity_type != NULL &&
+            identity_value != NULL) {
+            memset(identity_out, 0, sizeof(*identity_out));
+
+            snprintf(
+                identity_out->type,
+                sizeof(identity_out->type),
+                "%s",
+                (const char *)identity_type
+            );
+
+            snprintf(
+                identity_out->value,
+                sizeof(identity_out->value),
+                "%s",
+                (const char *)identity_value
+            );
+
+            identity_out->content_size =
+                (uint64_t)sqlite3_column_int64(statement, 2);
+
+            found = true;
+        }
+    }
+
+    sqlite3_finalize(statement);
+
+    return found;
+}
+
+bool play_activity_identity_source_store(
+    sqlite3 *database,
+    int rom_id,
+    const char *source_type,
+    const char *source_signature
+)
+{
+    if (database == NULL ||
+        rom_id < 0 ||
+        source_type == NULL ||
+        source_type[0] == '\0' ||
+        source_signature == NULL ||
+        source_signature[0] == '\0') {
+        return false;
+    }
+
+    const char *sql =
+        "INSERT INTO rom_identity_source("
+        "    rom_id,"
+        "    source_type,"
+        "    source_signature,"
+        "    updated_at"
+        ") VALUES(?1, ?2, ?3, strftime('%s', 'now')) "
+        "ON CONFLICT(rom_id) DO UPDATE SET "
+        "    source_type = excluded.source_type,"
+        "    source_signature = excluded.source_signature,"
+        "    updated_at = excluded.updated_at;";
+
+    sqlite3_stmt *statement = NULL;
+
+    if (sqlite3_prepare_v2(
+            database,
+            sql,
+            -1,
+            &statement,
+            NULL
+        ) != SQLITE_OK) {
+        return false;
+    }
+
+    sqlite3_bind_int(statement, 1, rom_id);
+    sqlite3_bind_text(
+        statement,
+        2,
+        source_type,
+        -1,
+        SQLITE_TRANSIENT
+    );
+    sqlite3_bind_text(
+        statement,
+        3,
+        source_signature,
+        -1,
+        SQLITE_TRANSIENT
+    );
+
+    int result = sqlite3_step(statement);
+    sqlite3_finalize(statement);
+
+    return result == SQLITE_DONE;
+}
+
+bool play_activity_identity_source_matches(
+    sqlite3 *database,
+    int rom_id,
+    const char *source_type,
+    const char *source_signature
+)
+{
+    if (database == NULL ||
+        rom_id < 0 ||
+        source_type == NULL ||
+        source_signature == NULL) {
+        return false;
+    }
+
+    const char *sql =
+        "SELECT 1 "
+        "FROM rom_identity_source "
+        "WHERE rom_id = ?1 "
+        "  AND source_type = ?2 "
+        "  AND source_signature = ?3 "
+        "LIMIT 1;";
+
+    sqlite3_stmt *statement = NULL;
+
+    if (sqlite3_prepare_v2(
+            database,
+            sql,
+            -1,
+            &statement,
+            NULL
+        ) != SQLITE_OK) {
+        return false;
+    }
+
+    sqlite3_bind_int(statement, 1, rom_id);
+    sqlite3_bind_text(
+        statement,
+        2,
+        source_type,
+        -1,
+        SQLITE_TRANSIENT
+    );
+    sqlite3_bind_text(
+        statement,
+        3,
+        source_signature,
+        -1,
+        SQLITE_TRANSIENT
+    );
+
+    bool matches = sqlite3_step(statement) == SQLITE_ROW;
+    sqlite3_finalize(statement);
+
+    return matches;
+}
+
+void play_activity_identity_source_delete(
+    sqlite3 *database,
+    int rom_id
+)
+{
+    if (database == NULL || rom_id < 0)
+        return;
+
+    sqlite3_stmt *statement = NULL;
+
+    if (sqlite3_prepare_v2(
+            database,
+            "DELETE FROM rom_identity_source WHERE rom_id = ?1;",
+            -1,
+            &statement,
+            NULL
+        ) != SQLITE_OK) {
+        return;
+    }
+
+    sqlite3_bind_int(statement, 1, rom_id);
+    sqlite3_step(statement);
+    sqlite3_finalize(statement);
+}
+
 int play_activity_identity_find_rom_id(
     sqlite3 *database,
     const RomContentIdentity *identity
@@ -402,6 +623,28 @@ bool play_activity_identity_merge_roms(
         sqlite3_prepare_v2(
             database,
             move_history_sql,
+            -1,
+            &statement,
+            NULL) != SQLITE_OK) {
+        success = false;
+    }
+    else if (success) {
+        sqlite3_bind_int(statement, 1, survivor_rom_id);
+        sqlite3_bind_int(statement, 2, redundant_rom_id);
+        success = sqlite3_step(statement) == SQLITE_DONE;
+    }
+
+    sqlite3_finalize(statement);
+    statement = NULL;
+
+    const char *delete_sources_sql =
+        "DELETE FROM rom_identity_source "
+        "WHERE rom_id = ?1 OR rom_id = ?2;";
+
+    if (success &&
+        sqlite3_prepare_v2(
+            database,
+            delete_sources_sql,
             -1,
             &statement,
             NULL) != SQLITE_OK) {

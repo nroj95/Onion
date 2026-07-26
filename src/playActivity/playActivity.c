@@ -193,9 +193,11 @@ static int resolve_rom_for_start(const char *rom_path)
 {
     RomContentIdentity identity;
     RomIdentityContext context;
+    char source_signature[17] = "";
     int64_t modified_time = 0;
     bool has_identity = false;
     bool identity_reused = false;
+    bool has_source_signature = false;
 
     rom_identity_context_build(rom_path, &context);
 
@@ -226,12 +228,47 @@ static int resolve_rom_for_start(const char *rom_path)
         }
     }
 
+    if (rom_id != ROM_NOT_FOUND &&
+        context.kind == ROM_IDENTITY_KIND_M3U) {
+        has_source_signature =
+            rom_identity_calculate_m3u_source_signature(
+                rom_path,
+                source_signature,
+                sizeof(source_signature)
+            );
+
+        if (has_source_signature &&
+            play_activity_identity_source_matches(
+                play_activity_db,
+                rom_id,
+                "m3u-stat-v1",
+                source_signature)) {
+            identity_reused = play_activity_identity_load(
+                play_activity_db,
+                rom_id,
+                &identity
+            );
+
+            has_identity = identity_reused;
+        }
+    }
+
     if (!has_identity) {
         has_identity = calculate_content_identity(
             rom_path,
             &identity,
             &modified_time
         );
+    }
+
+    if (context.kind == ROM_IDENTITY_KIND_M3U &&
+        !has_source_signature) {
+        has_source_signature =
+            rom_identity_calculate_m3u_source_signature(
+                rom_path,
+                source_signature,
+                sizeof(source_signature)
+            );
     }
 
     int identity_rom_id = ROM_NOT_FOUND;
@@ -319,6 +356,30 @@ static int resolve_rom_for_start(const char *rom_path)
                 stderr,
                 "Warning: unable to store rom identity: %s\n",
                 rom_path
+            );
+        }
+    }
+
+    if (rom_id != ROM_NOT_FOUND) {
+        if (context.kind == ROM_IDENTITY_KIND_M3U &&
+            has_identity &&
+            has_source_signature) {
+            if (!play_activity_identity_source_store(
+                    play_activity_db,
+                    rom_id,
+                    "m3u-stat-v1",
+                    source_signature)) {
+                fprintf(
+                    stderr,
+                    "Warning: unable to store rom source signature: %s\n",
+                    rom_path
+                );
+            }
+        }
+        else {
+            play_activity_identity_source_delete(
+                play_activity_db,
+                rom_id
             );
         }
     }

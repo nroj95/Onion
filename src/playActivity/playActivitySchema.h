@@ -20,7 +20,7 @@
  * =============================================================================
  */
 
-#define PLAY_ACTIVITY_IDENTITY_SCHEMA_VERSION 1
+#define PLAY_ACTIVITY_IDENTITY_SCHEMA_VERSION 2
 
 bool play_activity_identity_schema_ensure(sqlite3 *database);
 
@@ -37,6 +37,31 @@ bool play_activity_identity_load_if_unchanged(
     uint64_t content_size,
     int64_t modified_time,
     RomContentIdentity *identity_out
+);
+
+bool play_activity_identity_load(
+    sqlite3 *database,
+    int rom_id,
+    RomContentIdentity *identity_out
+);
+
+bool play_activity_identity_source_store(
+    sqlite3 *database,
+    int rom_id,
+    const char *source_type,
+    const char *source_signature
+);
+
+bool play_activity_identity_source_matches(
+    sqlite3 *database,
+    int rom_id,
+    const char *source_type,
+    const char *source_signature
+);
+
+void play_activity_identity_source_delete(
+    sqlite3 *database,
+    int rom_id
 );
 
 int play_activity_identity_find_rom_id(
