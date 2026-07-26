@@ -52,17 +52,62 @@ static void process_pending_asset_migration(
     if (!migration_found)
         return;
 
-    char core_path[PATH_MAX] = "";
+    char history_rom_path[PATH_MAX] = "";
 
-    if (!play_activity_history_find_core_path(
-            PLAY_ACTIVITY_HISTORY_PATH,
-            rom_path,
-            core_path,
-            sizeof(core_path)
-        )) {
+    int history_path_written;
+
+    if (old_file_path[0] == '/') {
+        history_path_written = snprintf(
+            history_rom_path,
+            sizeof(history_rom_path),
+            "%s",
+            old_file_path
+        );
+    }
+    else {
+        history_path_written = snprintf(
+            history_rom_path,
+            sizeof(history_rom_path),
+            "/mnt/SDCARD/Roms/%s",
+            old_file_path
+        );
+    }
+
+    if (history_path_written < 0 ||
+        (size_t)history_path_written >=
+            sizeof(history_rom_path)) {
         fprintf(
             stderr,
-            "Warning: unable to resolve launched core for asset migration: %s\n",
+            "Warning: old rom path is too long for asset migration: %s\n",
+            old_file_path
+        );
+        return;
+    }
+
+    char core_path[PATH_MAX] = "";
+
+    bool core_found =
+        play_activity_history_find_core_path(
+            PLAY_ACTIVITY_HISTORY_PATH,
+            history_rom_path,
+            core_path,
+            sizeof(core_path)
+        );
+
+    if (!core_found) {
+        core_found =
+            play_activity_history_find_core_path(
+                PLAY_ACTIVITY_HISTORY_PATH,
+                rom_path,
+                core_path,
+                sizeof(core_path)
+            );
+    }
+
+    if (!core_found) {
+        fprintf(
+            stderr,
+            "Warning: unable to resolve core for asset migration: %s\n",
             rom_path
         );
         return;
@@ -407,14 +452,20 @@ static bool get_stored_rom_path(
             sqlite3_column_text(statement, 0);
 
         if (stored_path != NULL) {
-            snprintf(
+            int written = snprintf(
                 file_path_out,
                 file_path_out_size,
                 "%s",
                 (const char *)stored_path
             );
 
-            found = true;
+            if (written >= 0 &&
+                (size_t)written < file_path_out_size) {
+                found = true;
+            }
+            else if (file_path_out_size > 0) {
+                file_path_out[0] = '\0';
+            }
         }
     }
 
@@ -563,21 +614,39 @@ static int resolve_rom_for_start(const char *rom_path)
 
         rom_id = identity_rom_id;
 
-        get_stored_rom_path(
-            rom_id,
-            old_file_path,
-            sizeof(old_file_path)
-        );
+        if (!get_stored_rom_path(
+                rom_id,
+                old_file_path,
+                sizeof(old_file_path))) {
+            fprintf(
+                stderr,
+                "Warning: unable to read stored rom path for identity match: %s\n",
+                rom_path
+            );
+        }
+        else {
+            __ensure_rel_path(new_file_path, rom_path);
 
-        __ensure_rel_path(new_file_path, rom_path);
-        update_rom_for_path(rom_id, rom_path);
-
-        play_activity_identity_record_path_change(
-            play_activity_db,
-            rom_id,
-            old_file_path,
-            new_file_path
-        );
+            if (play_activity_identity_move_rom_path(
+                    play_activity_db,
+                    rom_id,
+                    old_file_path,
+                    new_file_path)) {
+                /*
+                 * The stable path move is already committed. Refresh the
+                 * descriptive cache metadata separately.
+                 */
+                update_rom_for_path(rom_id, rom_path);
+            }
+            else {
+                fprintf(
+                    stderr,
+                    "Warning: unable to reconcile rom path: %s -> %s\n",
+                    old_file_path,
+                    new_file_path
+                );
+            }
+        }
     }
 
     if (rom_id == ROM_NOT_FOUND)
@@ -641,6 +710,8 @@ static void play_activity_start_with_identity(
 
     if (rom_id == ROM_NOT_FOUND)
         exit(EXIT_FAILURE);
+
+    process_pending_asset_migration(rom_file_path);
 
     char *sql = sqlite3_mprintf(
         "INSERT INTO play_activity(rom_id) VALUES(%d);",

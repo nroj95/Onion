@@ -98,6 +98,32 @@ static bool sqlite_schema_version_matches(
     return matches;
 }
 
+static int sqlite_scalar_int(
+    sqlite3 *database,
+    const char *sql
+)
+{
+    sqlite3_stmt *statement = NULL;
+
+    if (sqlite3_prepare_v2(
+            database,
+            sql,
+            -1,
+            &statement,
+            NULL
+        ) != SQLITE_OK) {
+        return -1;
+    }
+
+    int value = -1;
+
+    if (sqlite3_step(statement) == SQLITE_ROW)
+        value = sqlite3_column_int(statement, 0);
+
+    sqlite3_finalize(statement);
+    return value;
+}
+
 void test_identity_schema_storage(void)
 {
     sqlite3 *database = NULL;
@@ -117,9 +143,51 @@ void test_identity_schema_storage(void)
         return;
     }
 
+    const char *legacy_schema =
+        "CREATE TABLE rom("
+        "    id INTEGER PRIMARY KEY,"
+        "    type TEXT,"
+        "    name TEXT,"
+        "    file_path TEXT,"
+        "    image_path TEXT,"
+        "    created_at INTEGER DEFAULT (strftime('%s', 'now')),"
+        "    updated_at INTEGER"
+        ");"
+        "CREATE UNIQUE INDEX rom_id_index ON rom(id);"
+        "CREATE TABLE play_activity("
+        "    rom_id INTEGER,"
+        "    play_time INTEGER,"
+        "    created_at INTEGER DEFAULT (strftime('%s', 'now')),"
+        "    updated_at INTEGER"
+        ");"
+        "CREATE INDEX play_activity_rom_id_index "
+        "ON play_activity(rom_id);"
+        "INSERT INTO rom("
+        "    id, type, name, file_path, image_path"
+        ") VALUES("
+        "    1,"
+        "    'GBA',"
+        "    'fixture game',"
+        "    'GBA/fixture game.zip',"
+        "    'Imgs/GBA/fixture game.png'"
+        ");"
+        "INSERT INTO play_activity(rom_id, play_time) "
+        "VALUES(1, 120), (1, 45);";
+
+    check_condition(
+        sqlite3_exec(
+            database,
+            legacy_schema,
+            NULL,
+            NULL,
+            NULL
+        ) == SQLITE_OK,
+        "create legacy activity schema fixture"
+    );
+
     check_condition(
         play_activity_identity_schema_ensure(database),
-        "create identity schema"
+        "upgrade legacy activity schema"
     );
 
     check_condition(
@@ -142,6 +210,152 @@ void test_identity_schema_storage(void)
     check_condition(
         sqlite_schema_version_matches(database, "4"),
         "identity schema stores version 4"
+    );
+
+    check_condition(
+        sqlite_scalar_int(
+            database,
+            "SELECT COUNT(*) "
+            "FROM rom "
+            "WHERE id = 1 "
+            "  AND type = 'GBA' "
+            "  AND name = 'fixture game' "
+            "  AND file_path = 'GBA/fixture game.zip' "
+            "  AND image_path = 'Imgs/GBA/fixture game.png';"
+        ) == 1,
+        "schema upgrade preserves rom row"
+    );
+
+    check_condition(
+        sqlite_scalar_int(
+            database,
+            "SELECT COUNT(*) "
+            "FROM play_activity "
+            "WHERE rom_id = 1 "
+            "  AND play_time IN (120, 45);"
+        ) == 2 &&
+        sqlite_scalar_int(
+            database,
+            "SELECT SUM(play_time) "
+            "FROM play_activity "
+            "WHERE rom_id = 1;"
+        ) == 165,
+        "schema upgrade preserves activity history"
+    );
+
+    check_condition(
+        sqlite3_exec(
+            database,
+            "INSERT INTO rom("
+            "    id, type, name, file_path, image_path"
+            ") VALUES("
+            "    101,"
+            "    'GB',"
+            "    'atomic rename fixture',"
+            "    'GB/atomic-old.gb',"
+            "    ''"
+            ");",
+            NULL,
+            NULL,
+            NULL
+        ) == SQLITE_OK,
+        "create atomic path-change fixture"
+    );
+
+    check_condition(
+        sqlite3_exec(
+            database,
+            "CREATE TRIGGER fail_asset_migration "
+            "BEFORE INSERT ON rom_asset_migration "
+            "BEGIN "
+            "    SELECT RAISE(ABORT, 'forced migration failure');"
+            "END;",
+            NULL,
+            NULL,
+            NULL
+        ) == SQLITE_OK,
+        "create forced migration failure"
+    );
+
+    check_condition(
+        !play_activity_identity_move_rom_path(
+            database,
+            101,
+            "GB/atomic-old.gb",
+            "GB/atomic-new.gb"
+        ),
+        "path move fails when migration bookkeeping fails"
+    );
+
+    check_condition(
+        sqlite_scalar_int(
+            database,
+            "SELECT COUNT(*) "
+            "FROM rom "
+            "WHERE id = 101 "
+            "  AND file_path = 'GB/atomic-old.gb';"
+        ) == 1 &&
+        sqlite_scalar_int(
+            database,
+            "SELECT COUNT(*) "
+            "FROM rom_path_history "
+            "WHERE rom_id = 101;"
+        ) == 0 &&
+        sqlite_scalar_int(
+            database,
+            "SELECT COUNT(*) "
+            "FROM rom_asset_migration "
+            "WHERE rom_id = 101;"
+        ) == 0,
+        "failed path move rolls back all database changes"
+    );
+
+    check_condition(
+        sqlite3_exec(
+            database,
+            "DROP TRIGGER fail_asset_migration;",
+            NULL,
+            NULL,
+            NULL
+        ) == SQLITE_OK,
+        "remove forced migration failure"
+    );
+
+    check_condition(
+        play_activity_identity_move_rom_path(
+            database,
+            101,
+            "GB/atomic-old.gb",
+            "GB/atomic-new.gb"
+        ),
+        "commit atomic rom path move"
+    );
+
+    check_condition(
+        sqlite_scalar_int(
+            database,
+            "SELECT COUNT(*) "
+            "FROM rom "
+            "WHERE id = 101 "
+            "  AND file_path = 'GB/atomic-new.gb';"
+        ) == 1 &&
+        sqlite_scalar_int(
+            database,
+            "SELECT COUNT(*) "
+            "FROM rom_path_history "
+            "WHERE rom_id = 101 "
+            "  AND old_file_path = 'GB/atomic-old.gb' "
+            "  AND new_file_path = 'GB/atomic-new.gb';"
+        ) == 1 &&
+        sqlite_scalar_int(
+            database,
+            "SELECT COUNT(*) "
+            "FROM rom_asset_migration "
+            "WHERE rom_id = 101 "
+            "  AND old_file_path = 'GB/atomic-old.gb' "
+            "  AND new_file_path = 'GB/atomic-new.gb';"
+        ) == 1,
+        "atomic path move commits complete bookkeeping"
     );
 
     RomContentIdentity stored_identity;
@@ -196,6 +410,76 @@ void test_identity_schema_storage(void)
         loaded_identity.content_size ==
             stored_identity.content_size,
         "loaded identity matches stored values"
+    );
+
+    RomContentIdentity first_collision_identity;
+    RomContentIdentity second_collision_identity;
+
+    memset(
+        &first_collision_identity,
+        0,
+        sizeof(first_collision_identity)
+    );
+    memset(
+        &second_collision_identity,
+        0,
+        sizeof(second_collision_identity)
+    );
+
+    snprintf(
+        first_collision_identity.type,
+        sizeof(first_collision_identity.type),
+        "%s",
+        "crc32"
+    );
+    snprintf(
+        first_collision_identity.value,
+        sizeof(first_collision_identity.value),
+        "%s",
+        "deadbeef"
+    );
+    first_collision_identity.content_size = 100;
+
+    snprintf(
+        second_collision_identity.type,
+        sizeof(second_collision_identity.type),
+        "%s",
+        "crc32"
+    );
+    snprintf(
+        second_collision_identity.value,
+        sizeof(second_collision_identity.value),
+        "%s",
+        "deadbeef"
+    );
+    second_collision_identity.content_size = 200;
+
+    check_condition(
+        play_activity_identity_store(
+            database,
+            90,
+            &first_collision_identity,
+            1000
+        ) &&
+        play_activity_identity_store(
+            database,
+            91,
+            &second_collision_identity,
+            1000
+        ),
+        "store same hash with different content sizes"
+    );
+
+    check_condition(
+        play_activity_identity_find_rom_id(
+            database,
+            &first_collision_identity
+        ) == 90 &&
+        play_activity_identity_find_rom_id(
+            database,
+            &second_collision_identity
+        ) == 91,
+        "content size distinguishes matching hashes"
     );
 
     RomContentIdentity unchanged_identity;

@@ -1125,3 +1125,103 @@ bool play_activity_identity_record_path_change(
         new_file_path
     );
 }
+
+bool play_activity_identity_move_rom_path(
+    sqlite3 *database,
+    int rom_id,
+    const char *old_file_path,
+    const char *new_file_path
+)
+{
+    if (database == NULL ||
+        rom_id < 0 ||
+        old_file_path == NULL ||
+        new_file_path == NULL ||
+        old_file_path[0] == '\0' ||
+        new_file_path[0] == '\0' ||
+        strcmp(old_file_path, new_file_path) == 0) {
+        return false;
+    }
+
+    if (sqlite3_exec(
+            database,
+            "BEGIN IMMEDIATE;",
+            NULL,
+            NULL,
+            NULL) != SQLITE_OK) {
+        return false;
+    }
+
+    bool success = true;
+    sqlite3_stmt *statement = NULL;
+
+    const char *update_path_sql =
+        "UPDATE rom "
+        "SET file_path = ?1 "
+        "WHERE id = ?2 "
+        "  AND file_path = ?3;";
+
+    if (sqlite3_prepare_v2(
+            database,
+            update_path_sql,
+            -1,
+            &statement,
+            NULL
+        ) != SQLITE_OK) {
+        success = false;
+    }
+    else {
+        sqlite3_bind_text(
+            statement,
+            1,
+            new_file_path,
+            -1,
+            SQLITE_TRANSIENT
+        );
+        sqlite3_bind_int(statement, 2, rom_id);
+        sqlite3_bind_text(
+            statement,
+            3,
+            old_file_path,
+            -1,
+            SQLITE_TRANSIENT
+        );
+
+        success =
+            sqlite3_step(statement) == SQLITE_DONE &&
+            sqlite3_changes(database) == 1;
+    }
+
+    sqlite3_finalize(statement);
+
+    if (success) {
+        success = play_activity_identity_record_path_change(
+            database,
+            rom_id,
+            old_file_path,
+            new_file_path
+        );
+    }
+
+    if (success) {
+        success = sqlite3_exec(
+            database,
+            "COMMIT;",
+            NULL,
+            NULL,
+            NULL
+        ) == SQLITE_OK;
+    }
+
+    if (!success) {
+        sqlite3_exec(
+            database,
+            "ROLLBACK;",
+            NULL,
+            NULL,
+            NULL
+        );
+    }
+
+    return success;
+}

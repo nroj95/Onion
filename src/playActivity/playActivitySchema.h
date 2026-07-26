@@ -109,4 +109,11 @@ bool play_activity_identity_record_path_change(
     const char *new_file_path
 );
 
+bool play_activity_identity_move_rom_path(
+    sqlite3 *database,
+    int rom_id,
+    const char *old_file_path,
+    const char *new_file_path
+);
+
 #endif
