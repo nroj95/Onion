@@ -180,6 +180,46 @@ static bool get_selected_core(
     return core_found;
 }
 
+static bool is_path_only_system(const char *system)
+{
+    char lowercase_system[STR_MAX];
+
+    copy_lowercase(
+        lowercase_system,
+        sizeof(lowercase_system),
+        system
+    );
+
+    return strcmp(lowercase_system, "ports") == 0 ||
+           strcmp(lowercase_system, "scummvm") == 0;
+}
+
+static bool is_path_only_rom(
+    const char *system,
+    const char *rom_path
+)
+{
+    if (system == NULL || rom_path == NULL)
+        return false;
+
+    if (strcasecmp(system, "PICO") != 0)
+        return false;
+
+    const char *basename = strrchr(rom_path, '/');
+    basename = basename == NULL ? rom_path : basename + 1;
+
+    return strcmp(
+        basename,
+        "~Run PICO-8 with Splore.png"
+    ) == 0;
+}
+
+static bool is_arcade_system(const char *system)
+{
+    return system != NULL &&
+           strcasecmp(system, "ADVMAME") == 0;
+}
+
 static bool is_arcade_core(const char *core)
 {
     static const char *arcade_cores[] = {
@@ -634,8 +674,13 @@ bool rom_identity_context_build(
         sizeof(context->core)
     );
 
-    if (is_arcade_core(context->core)) {
+    if (is_arcade_core(context->core) ||
+        is_arcade_system(context->system)) {
         context->kind = ROM_IDENTITY_KIND_ARCADE;
+    }
+    else if (is_path_only_system(context->system) ||
+             is_path_only_rom(context->system, rom_path)) {
+        context->kind = ROM_IDENTITY_KIND_UNSUPPORTED;
     }
     else if (strcmp(context->extension, "zip") == 0) {
         context->kind = ROM_IDENTITY_KIND_ZIP;
