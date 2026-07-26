@@ -26,6 +26,7 @@ int main(void)
     test_identity_schema_storage();
     test_identity_rom_merge();
     test_history_core_lookup();
+    test_asset_migration();
 
     int tests_run = test_count_run();
     int tests_failed = test_count_failed();

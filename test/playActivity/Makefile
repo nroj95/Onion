@@ -5,7 +5,8 @@
 # key behavior:
 # - avoids onion's unrelated sdl and gtest test dependencies.
 # - uses the host 7z executable for archive fixtures.
-# - builds outside the production source directories.
+# - keeps all generated objects inside this test directory.
+# - builds against onion's bundled sqlite source.
 # ==============================================================================
 
 target := playactivity-identity-test
@@ -24,7 +25,7 @@ common_flags := \
 	-I../../src/common \
 	-I../../src/playActivity
 
-sources := \
+test_sources := \
 	test_identity.c \
 	test_identity_raw.c \
 	test_identity_zip.c \
@@ -33,29 +34,71 @@ sources := \
 	test_identity_schema.c \
 	test_identity_merge.c \
 	test_identity_history.c \
-	test_support.c \
-	../../src/playActivity/playActivityIdentity.c \
-	../../src/playActivity/playActivitySchema.c \
-	../../src/playActivity/playActivityHistory.c \
-	../../include/cjson/cJSON.c \
-	../../src/common/utils/file.c \
-	../../src/common/utils/str.c \
-	../../src/common/utils/log.c
+	test_identity_assets.c \
+	test_support.c
 
-objects := $(addprefix $(build_directory)/,$(sources:.c=.o))
+play_activity_sources := \
+	playActivityIdentity.c \
+	playActivitySchema.c \
+	playActivityHistory.c \
+	playActivityAssets.c
+
+common_sources := \
+	file.c \
+	str.c \
+	log.c
+
+test_objects := \
+	$(addprefix $(build_directory)/test/,$(test_sources:.c=.o))
+
+play_activity_objects := \
+	$(addprefix $(build_directory)/src/playActivity/,$(play_activity_sources:.c=.o))
+
+common_objects := \
+	$(addprefix $(build_directory)/src/common/utils/,$(common_sources:.c=.o))
+
+cjson_object := $(build_directory)/include/cjson/cJSON.o
+sqlite_object := $(build_directory)/include/sqlite3/sqlite3.o
+
+objects := \
+	$(test_objects) \
+	$(play_activity_objects) \
+	$(common_objects) \
+	$(cjson_object) \
+	$(sqlite_object)
 
 .PHONY: all run clean
 
 all: $(target)
 
-sqlite_library := /usr/lib/x86_64-linux-gnu/libsqlite3.so.0
-
 $(target): $(objects)
-	$(compiler) $(objects) $(sqlite_library) -o $@
+	$(compiler) $(objects) -o $@
 
-$(build_directory)/%.o: %.c
+$(build_directory)/test/%.o: %.c
 	@mkdir -p "$(dir $@)"
 	$(compiler) $(common_flags) -c "$<" -o "$@"
+
+$(build_directory)/src/playActivity/%.o: ../../src/playActivity/%.c
+	@mkdir -p "$(dir $@)"
+	$(compiler) $(common_flags) -c "$<" -o "$@"
+
+$(build_directory)/src/common/utils/%.o: ../../src/common/utils/%.c
+	@mkdir -p "$(dir $@)"
+	$(compiler) $(common_flags) -c "$<" -o "$@"
+
+$(cjson_object): ../../include/cjson/cJSON.c
+	@mkdir -p "$(dir $@)"
+	$(compiler) $(common_flags) -c "$<" -o "$@"
+
+# sqlite is bundled third-party code; keep project warning flags off it.
+$(sqlite_object): ../../include/sqlite3/sqlite3.c
+	@mkdir -p "$(dir $@)"
+	$(compiler) \
+		-std=gnu18 \
+		-D_DEFAULT_SOURCE \
+		-Wno-discarded-qualifiers \
+		-c "$<" \
+		-o "$@"
 
 run: $(target)
 	./$(target)
