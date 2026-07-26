@@ -196,6 +196,91 @@ bool play_activity_identity_store(
     return result == SQLITE_DONE;
 }
 
+bool play_activity_identity_load_if_unchanged(
+    sqlite3 *database,
+    int rom_id,
+    uint64_t content_size,
+    int64_t modified_time,
+    RomContentIdentity *identity_out
+)
+{
+    if (database == NULL ||
+        rom_id < 0 ||
+        identity_out == NULL) {
+        return false;
+    }
+
+    const char *sql =
+        "SELECT identity_type, identity_value, content_size "
+        "FROM rom_identity "
+        "WHERE rom_id = ?1 "
+        "  AND content_size = ?2 "
+        "  AND modified_time = ?3 "
+        "LIMIT 1;";
+
+    sqlite3_stmt *statement = NULL;
+
+    if (sqlite3_prepare_v2(
+            database,
+            sql,
+            -1,
+            &statement,
+            NULL
+        ) != SQLITE_OK) {
+        return false;
+    }
+
+    sqlite3_bind_int(statement, 1, rom_id);
+    sqlite3_bind_int64(
+        statement,
+        2,
+        (sqlite3_int64)content_size
+    );
+    sqlite3_bind_int64(
+        statement,
+        3,
+        (sqlite3_int64)modified_time
+    );
+
+    bool found = false;
+
+    if (sqlite3_step(statement) == SQLITE_ROW) {
+        const unsigned char *identity_type =
+            sqlite3_column_text(statement, 0);
+
+        const unsigned char *identity_value =
+            sqlite3_column_text(statement, 1);
+
+        if (identity_type != NULL &&
+            identity_value != NULL) {
+            memset(identity_out, 0, sizeof(*identity_out));
+
+            snprintf(
+                identity_out->type,
+                sizeof(identity_out->type),
+                "%s",
+                (const char *)identity_type
+            );
+
+            snprintf(
+                identity_out->value,
+                sizeof(identity_out->value),
+                "%s",
+                (const char *)identity_value
+            );
+
+            identity_out->content_size =
+                (uint64_t)sqlite3_column_int64(statement, 2);
+
+            found = true;
+        }
+    }
+
+    sqlite3_finalize(statement);
+
+    return found;
+}
+
 int play_activity_identity_find_rom_id(
     sqlite3 *database,
     const RomContentIdentity *identity

@@ -173,13 +173,12 @@ static bool get_stored_rom_path(
 static int resolve_rom_for_start(const char *rom_path)
 {
     RomContentIdentity identity;
+    RomIdentityContext context;
     int64_t modified_time = 0;
+    bool has_identity = false;
+    bool identity_reused = false;
 
-    bool has_identity = calculate_content_identity(
-        rom_path,
-        &identity,
-        &modified_time
-    );
+    rom_identity_context_build(rom_path, &context);
 
     play_activity_db_open();
 
@@ -187,8 +186,37 @@ static int resolve_rom_for_start(const char *rom_path)
         return ROM_NOT_FOUND;
 
     int rom_id = __db_get_rom_id_by_path(rom_path);
+
+    if (rom_id != ROM_NOT_FOUND &&
+        context.kind == ROM_IDENTITY_KIND_RAW) {
+        struct stat file_status;
+
+        if (stat(rom_path, &file_status) == 0) {
+            modified_time = (int64_t)file_status.st_mtime;
+
+            identity_reused =
+                play_activity_identity_load_if_unchanged(
+                    play_activity_db,
+                    rom_id,
+                    (uint64_t)file_status.st_size,
+                    modified_time,
+                    &identity
+                );
+
+            has_identity = identity_reused;
+        }
+    }
+
+    if (!has_identity) {
+        has_identity = calculate_content_identity(
+            rom_path,
+            &identity,
+            &modified_time
+        );
+    }
+
     int identity_rom_id = ROM_NOT_FOUND;
-    bool identity_stored = false;
+    bool identity_stored = identity_reused;
 
     if (has_identity) {
         identity_rom_id = play_activity_identity_find_rom_id(
