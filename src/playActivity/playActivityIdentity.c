@@ -10,7 +10,9 @@
 
 #define CMD_TO_RUN_PATH "/mnt/SDCARD/.tmp_update/cmd_to_run.sh"
 #define ROMS_PATH_PREFIX "/mnt/SDCARD/Roms/"
+#ifndef SEVEN_ZIP_PATH
 #define SEVEN_ZIP_PATH "/mnt/SDCARD/.tmp_update/bin/7z"
+#endif
 
 /* =============================================================================
  * purpose:
