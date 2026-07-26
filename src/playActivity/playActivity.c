@@ -104,6 +104,49 @@ static bool calculate_content_identity(
     return true;
 }
 
+static const char *identity_source_type(
+    RomIdentityKind kind
+)
+{
+    switch (kind) {
+    case ROM_IDENTITY_KIND_CUE:
+        return "cue-stat-v1";
+
+    case ROM_IDENTITY_KIND_M3U:
+        return "m3u-stat-v3";
+
+    default:
+        return NULL;
+    }
+}
+
+static bool calculate_identity_source_signature(
+    RomIdentityKind kind,
+    const char *rom_path,
+    char *signature_out,
+    size_t signature_out_size
+)
+{
+    switch (kind) {
+    case ROM_IDENTITY_KIND_CUE:
+        return rom_identity_calculate_cue_source_signature(
+            rom_path,
+            signature_out,
+            signature_out_size
+        );
+
+    case ROM_IDENTITY_KIND_M3U:
+        return rom_identity_calculate_m3u_source_signature(
+            rom_path,
+            signature_out,
+            signature_out_size
+        );
+
+    default:
+        return false;
+    }
+}
+
 static void update_rom_for_path(
     int rom_id,
     const char *rom_path
@@ -206,6 +249,9 @@ static int resolve_rom_for_start(const char *rom_path)
 
     rom_identity_context_build(rom_path, &context);
 
+    const char *source_type =
+        identity_source_type(context.kind);
+
     play_activity_db_open();
 
     if (play_activity_db == NULL)
@@ -234,9 +280,10 @@ static int resolve_rom_for_start(const char *rom_path)
     }
 
     if (rom_id != ROM_NOT_FOUND &&
-        context.kind == ROM_IDENTITY_KIND_M3U) {
+        source_type != NULL) {
         has_source_signature =
-            rom_identity_calculate_m3u_source_signature(
+            calculate_identity_source_signature(
+                context.kind,
                 rom_path,
                 source_signature,
                 sizeof(source_signature)
@@ -246,7 +293,7 @@ static int resolve_rom_for_start(const char *rom_path)
             play_activity_identity_source_matches(
                 play_activity_db,
                 rom_id,
-                "m3u-stat-v2",
+                source_type,
                 source_signature)) {
             identity_reused = play_activity_identity_load(
                 play_activity_db,
@@ -266,10 +313,11 @@ static int resolve_rom_for_start(const char *rom_path)
         );
     }
 
-    if (context.kind == ROM_IDENTITY_KIND_M3U &&
+    if (source_type != NULL &&
         !has_source_signature) {
         has_source_signature =
-            rom_identity_calculate_m3u_source_signature(
+            calculate_identity_source_signature(
+                context.kind,
                 rom_path,
                 source_signature,
                 sizeof(source_signature)
@@ -366,13 +414,13 @@ static int resolve_rom_for_start(const char *rom_path)
     }
 
     if (rom_id != ROM_NOT_FOUND) {
-        if (context.kind == ROM_IDENTITY_KIND_M3U &&
+        if (source_type != NULL &&
             has_identity &&
             has_source_signature) {
             if (!play_activity_identity_source_store(
                     play_activity_db,
                     rom_id,
-                    "m3u-stat-v2",
+                    source_type,
                     source_signature)) {
                 fprintf(
                     stderr,

@@ -915,6 +915,19 @@ static char *trim_playlist_entry(char *text)
     return text;
 }
 
+static char *skip_utf8_bom(char *text)
+{
+    if (text != NULL &&
+        strlen(text) >= 3 &&
+        (unsigned char)text[0] == 0xef &&
+        (unsigned char)text[1] == 0xbb &&
+        (unsigned char)text[2] == 0xbf) {
+        return text + 3;
+    }
+
+    return text;
+}
+
 static void normalize_path_separators(char *path)
 {
     for (size_t index = 0; path[index] != '\0'; index++) {
@@ -1059,12 +1072,8 @@ static bool calculate_m3u_identity_internal(
 
         char *entry = trim_playlist_entry(line);
 
-        if (entry_count == 0 &&
-            (unsigned char)entry[0] == 0xef &&
-            (unsigned char)entry[1] == 0xbb &&
-            (unsigned char)entry[2] == 0xbf) {
-            entry += 3;
-        }
+        if (entry_count == 0)
+            entry = skip_utf8_bom(entry);
 
         if (entry[0] == '\0' || entry[0] == '#')
             continue;
@@ -1272,12 +1281,8 @@ static bool calculate_m3u_source_signature_internal(
 
         char *entry = trim_playlist_entry(line);
 
-        if (entry_count == 0 &&
-            (unsigned char)entry[0] == 0xef &&
-            (unsigned char)entry[1] == 0xbb &&
-            (unsigned char)entry[2] == 0xbf) {
-            entry += 3;
-        }
+        if (entry_count == 0)
+            entry = skip_utf8_bom(entry);
 
         if (entry[0] == '\0' || entry[0] == '#')
             continue;
@@ -1352,6 +1357,36 @@ static bool calculate_m3u_source_signature_internal(
     fclose(playlist);
 
     return read_successfully && entry_count > 0;
+}
+
+bool rom_identity_calculate_cue_source_signature(
+    const char *rom_path,
+    char *signature_out,
+    size_t signature_out_size
+)
+{
+    if (rom_path == NULL ||
+        signature_out == NULL ||
+        signature_out_size < 17) {
+        return false;
+    }
+
+    uint64_t hash = UINT64_C(14695981039346656037);
+
+    if (!calculate_cue_source_signature(
+            rom_path,
+            &hash)) {
+        return false;
+    }
+
+    int written = snprintf(
+        signature_out,
+        signature_out_size,
+        "%016llx",
+        (unsigned long long)hash
+    );
+
+    return written == 16;
 }
 
 bool rom_identity_calculate_m3u_source_signature(
