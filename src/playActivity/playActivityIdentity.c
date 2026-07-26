@@ -401,6 +401,89 @@ static bool append_shell_quoted(
     return true;
 }
 
+static bool append_command_text(
+    char *destination,
+    size_t destination_size,
+    const char *text
+)
+{
+    size_t used = strlen(destination);
+    size_t text_length = strlen(text);
+
+    if (used >= destination_size)
+        return false;
+
+    if (text_length >= destination_size - used)
+        return false;
+
+    memcpy(
+        destination + used,
+        text,
+        text_length + 1
+    );
+
+    return true;
+}
+
+static bool command_exited_successfully(int status)
+{
+    return status != -1 &&
+           WIFEXITED(status) &&
+           WEXITSTATUS(status) == 0;
+}
+
+static FILE *open_zip_member_stream(
+    const char *archive_path,
+    const char *member_path
+)
+{
+    if (archive_path == NULL ||
+        member_path == NULL ||
+        archive_path[0] == '\0' ||
+        member_path[0] == '\0') {
+        return NULL;
+    }
+
+    char command[PATH_MAX * 3] = "";
+
+    snprintf(
+        command,
+        sizeof(command),
+        "%s x -so ",
+        SEVEN_ZIP_PATH
+    );
+
+    if (!append_shell_quoted(
+            command,
+            sizeof(command),
+            archive_path)) {
+        return NULL;
+    }
+
+    if (!append_command_text(
+            command,
+            sizeof(command),
+            " ")) {
+        return NULL;
+    }
+
+    if (!append_shell_quoted(
+            command,
+            sizeof(command),
+            member_path)) {
+        return NULL;
+    }
+
+    if (!append_command_text(
+            command,
+            sizeof(command),
+            " 2>/dev/null")) {
+        return NULL;
+    }
+
+    return popen(command, "r");
+}
+
 static void trim_line_end(char *text)
 {
     size_t length = strlen(text);
@@ -434,7 +517,12 @@ static bool get_single_zip_member(
         return false;
     }
 
-    strcat(command, " 2>/dev/null");
+    if (!append_command_text(
+            command,
+            sizeof(command),
+            " 2>/dev/null")) {
+        return false;
+    }
 
     FILE *listing = popen(command, "r");
     if (listing == NULL)
@@ -504,9 +592,7 @@ static bool get_single_zip_member(
 
     int status = pclose(listing);
 
-    return status != -1 &&
-           WIFEXITED(status) &&
-           WEXITSTATUS(status) == 0 &&
+    return command_exited_successfully(status) &&
            file_count == 1;
 }
 
@@ -517,34 +603,10 @@ static bool calculate_zip_member_crc32(
     uint64_t *size_out
 )
 {
-    char command[PATH_MAX * 3] = "";
-
-    snprintf(
-        command,
-        sizeof(command),
-        "%s x -so ",
-        SEVEN_ZIP_PATH
+    FILE *stream = open_zip_member_stream(
+        archive_path,
+        member_path
     );
-
-    if (!append_shell_quoted(
-            command,
-            sizeof(command),
-            archive_path)) {
-        return false;
-    }
-
-    strcat(command, " ");
-
-    if (!append_shell_quoted(
-            command,
-            sizeof(command),
-            member_path)) {
-        return false;
-    }
-
-    strcat(command, " 2>/dev/null");
-
-    FILE *stream = popen(command, "r");
     if (stream == NULL)
         return false;
 
@@ -557,9 +619,7 @@ static bool calculate_zip_member_crc32(
     int status = pclose(stream);
 
     return calculated &&
-           status != -1 &&
-           WIFEXITED(status) &&
-           WEXITSTATUS(status) == 0;
+           command_exited_successfully(status);
 }
 
 bool rom_identity_calculate_raw(
@@ -1157,7 +1217,12 @@ static bool list_zip_archive_members(
         return false;
     }
 
-    strcat(command, " 2>/dev/null");
+    if (!append_command_text(
+            command,
+            sizeof(command),
+            " 2>/dev/null")) {
+        return false;
+    }
 
     FILE *listing = popen(command, "r");
 
@@ -1265,9 +1330,7 @@ static bool list_zip_archive_members(
 
     successful =
         successful &&
-        status != -1 &&
-        WIFEXITED(status) &&
-        WEXITSTATUS(status) == 0 &&
+        command_exited_successfully(status) &&
         member_count > 0;
 
     if (!successful) {
@@ -1405,44 +1468,10 @@ static bool calculate_zip_cue_identity(
         return false;
     }
 
-    char command[PATH_MAX * 3] = "";
-
-    snprintf(
-        command,
-        sizeof(command),
-        "%s x -so ",
-        SEVEN_ZIP_PATH
+    FILE *cue_stream = open_zip_member_stream(
+        archive_path,
+        cue_member_path
     );
-
-    if (!append_shell_quoted(
-            command,
-            sizeof(command),
-            archive_path)) {
-        free_zip_archive_members(
-            members,
-            member_count
-        );
-
-        return false;
-    }
-
-    strcat(command, " ");
-
-    if (!append_shell_quoted(
-            command,
-            sizeof(command),
-            cue_member_path)) {
-        free_zip_archive_members(
-            members,
-            member_count
-        );
-
-        return false;
-    }
-
-    strcat(command, " 2>/dev/null");
-
-    FILE *cue_stream = popen(command, "r");
 
     if (cue_stream == NULL) {
         free_zip_archive_members(
@@ -1546,9 +1575,7 @@ static bool calculate_zip_cue_identity(
     successful =
         successful &&
         read_successfully &&
-        status != -1 &&
-        WIFEXITED(status) &&
-        WEXITSTATUS(status) == 0 &&
+        command_exited_successfully(status) &&
         file_count > 0;
 
     if (successful) {

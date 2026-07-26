@@ -30,6 +30,8 @@ void test_single_file_zip_identity(void)
     char first_zip_path[512];
     char second_zip_path[512];
     char changed_zip_path[512];
+    char quoted_member_path[512];
+    char quoted_zip_path[512];
 
     snprintf(
         member_path,
@@ -56,6 +58,20 @@ void test_single_file_zip_identity(void)
         changed_zip_path,
         sizeof(changed_zip_path),
         "%s/changed.zip",
+        temporary_directory
+    );
+
+    snprintf(
+        quoted_member_path,
+        sizeof(quoted_member_path),
+        "%s/quoted member's game.rom",
+        temporary_directory
+    );
+
+    snprintf(
+        quoted_zip_path,
+        sizeof(quoted_zip_path),
+        "%s/quoted archive's game.zip",
         temporary_directory
     );
 
@@ -158,9 +174,59 @@ void test_single_file_zip_identity(void)
         "changed zip member produces different identity"
     );
 
+    bool quoted_member_written =
+        write_fixture(
+            quoted_member_path,
+            "rom contents in shell-sensitive filenames"
+        );
+
+    check_condition(
+        quoted_member_written,
+        "write shell-sensitive zip member fixture"
+    );
+
+    char quoted_command[2048];
+
+    snprintf(
+        quoted_command,
+        sizeof(quoted_command),
+        "cd '%s' && "
+        "/usr/bin/7z a -bd -y -tzip -mx=5 "
+        "\"quoted archive's game.zip\" "
+        "\"quoted member's game.rom\" "
+        ">/dev/null",
+        temporary_directory
+    );
+
+    check_condition(
+        run_command(quoted_command),
+        "create zip fixture with spaces and apostrophes"
+    );
+
+    RomContentIdentity quoted_identity;
+
+    bool quoted_calculated =
+        rom_identity_calculate_zip(
+            quoted_zip_path,
+            &quoted_identity
+        );
+
+    check_condition(
+        quoted_calculated,
+        "calculate zip identity with spaces and apostrophes"
+    );
+
+    check_condition(
+        quoted_calculated &&
+        strcmp(quoted_identity.type, "crc32") == 0,
+        "shell-sensitive zip uses member crc32"
+    );
+
     unlink(member_path);
     unlink(first_zip_path);
     unlink(second_zip_path);
     unlink(changed_zip_path);
+    unlink(quoted_member_path);
+    unlink(quoted_zip_path);
     rmdir(temporary_directory);
 }
