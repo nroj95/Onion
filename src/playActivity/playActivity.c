@@ -109,8 +109,11 @@ static const char *identity_source_type(
 )
 {
     switch (kind) {
+    case ROM_IDENTITY_KIND_ZIP:
+        return "zip-stat-v2";
+
     case ROM_IDENTITY_KIND_CUE:
-        return "cue-stat-v1";
+        return "cue-stat-v2";
 
     case ROM_IDENTITY_KIND_M3U:
         return "m3u-stat-v3";
@@ -128,6 +131,13 @@ static bool calculate_identity_source_signature(
 )
 {
     switch (kind) {
+    case ROM_IDENTITY_KIND_ZIP:
+        return rom_identity_calculate_file_source_signature(
+            rom_path,
+            signature_out,
+            signature_out_size
+        );
+
     case ROM_IDENTITY_KIND_CUE:
         return rom_identity_calculate_cue_source_signature(
             rom_path,

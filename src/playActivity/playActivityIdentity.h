@@ -65,6 +65,12 @@ bool rom_identity_calculate_cue(
     RomContentIdentity *identity
 );
 
+bool rom_identity_calculate_file_source_signature(
+    const char *rom_path,
+    char *signature_out,
+    size_t signature_out_size
+);
+
 bool rom_identity_calculate_cue_source_signature(
     const char *rom_path,
     char *signature_out,

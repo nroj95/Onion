@@ -599,6 +599,11 @@ bool rom_identity_calculate_raw(
     return true;
 }
 
+static bool calculate_zip_cue_identity(
+    const char *archive_path,
+    RomContentIdentity *identity
+);
+
 bool rom_identity_calculate_zip(
     const char *rom_path,
     RomContentIdentity *identity
@@ -615,7 +620,10 @@ bool rom_identity_calculate_zip(
             rom_path,
             member_path,
             sizeof(member_path))) {
-        return false;
+        return calculate_zip_cue_identity(
+            rom_path,
+            identity
+        );
     }
 
     uint32_t checksum = 0;
@@ -669,15 +677,19 @@ static bool resolve_playlist_entry_path(
     size_t path_out_size
 );
 
-static bool extract_cue_file_path(
+static bool extract_cue_file_entry(
     const char *line,
     char *path_out,
-    size_t path_out_size
+    size_t path_out_size,
+    char *type_out,
+    size_t type_out_size
 )
 {
     if (line == NULL ||
         path_out == NULL ||
-        path_out_size == 0) {
+        path_out_size == 0 ||
+        type_out == NULL ||
+        type_out_size == 0) {
         return false;
     }
 
@@ -699,8 +711,9 @@ static bool extract_cue_file_path(
 
     const char *path_start = line;
     const char *path_end = NULL;
+    bool quoted_path = *path_start == '"';
 
-    if (*path_start == '"') {
+    if (quoted_path) {
         path_start++;
         path_end = strchr(path_start, '"');
     }
@@ -725,6 +738,29 @@ static bool extract_cue_file_path(
     path_out[path_length] = '\0';
 
     normalize_path_separators(path_out);
+
+    const char *type_start = path_end;
+
+    if (quoted_path)
+        type_start++;
+
+    while (isspace((unsigned char)*type_start))
+        type_start++;
+
+    const char *type_end = type_start;
+
+    while (*type_end != '\0' &&
+           !isspace((unsigned char)*type_end)) {
+        type_end++;
+    }
+
+    size_t type_length = (size_t)(type_end - type_start);
+
+    if (type_length >= type_out_size)
+        return false;
+
+    memcpy(type_out, type_start, type_length);
+    type_out[type_length] = '\0';
 
     return true;
 }
@@ -761,11 +797,14 @@ static bool calculate_cue_identity_internal(
             continue;
 
         char referenced_entry[PATH_MAX];
+        char referenced_type[32];
 
-        if (!extract_cue_file_path(
+        if (!extract_cue_file_entry(
                 cue_line,
                 referenced_entry,
-                sizeof(referenced_entry))) {
+                sizeof(referenced_entry),
+                referenced_type,
+                sizeof(referenced_type))) {
             fnv1a64_update_text(&hash, cue_line);
             continue;
         }
@@ -803,6 +842,7 @@ static bool calculate_cue_identity_internal(
         }
 
         fnv1a64_update_text(&hash, "FILE");
+        fnv1a64_update_text(&hash, referenced_type);
         fnv1a64_update_text(
             &hash,
             referenced_identity.type
@@ -997,6 +1037,544 @@ static bool resolve_playlist_entry_path(
 
     normalize_path_separators(path_out);
     return true;
+}
+
+typedef struct {
+    char *path;
+    uint64_t size;
+    uint32_t checksum;
+    bool has_size;
+    bool has_checksum;
+} ZipArchiveMember;
+
+static void free_zip_archive_members(
+    ZipArchiveMember *members,
+    size_t member_count
+)
+{
+    if (members == NULL)
+        return;
+
+    for (size_t index = 0; index < member_count; index++)
+        free(members[index].path);
+
+    free(members);
+}
+
+static bool append_zip_archive_member(
+    ZipArchiveMember **members,
+    size_t *member_count,
+    size_t *member_capacity,
+    const char *member_path,
+    uint64_t member_size,
+    uint32_t member_checksum,
+    bool has_size,
+    bool has_checksum
+)
+{
+    if (members == NULL ||
+        member_count == NULL ||
+        member_capacity == NULL ||
+        member_path == NULL ||
+        member_path[0] == '\0') {
+        return false;
+    }
+
+    if (*member_count == *member_capacity) {
+        size_t new_capacity =
+            *member_capacity == 0
+                ? 8
+                : *member_capacity * 2;
+
+        if (new_capacity < *member_capacity)
+            return false;
+
+        ZipArchiveMember *resized = realloc(
+            *members,
+            new_capacity * sizeof(**members)
+        );
+
+        if (resized == NULL)
+            return false;
+
+        *members = resized;
+        *member_capacity = new_capacity;
+    }
+
+    char *stored_path = strdup(member_path);
+
+    if (stored_path == NULL)
+        return false;
+
+    normalize_path_separators(stored_path);
+
+    ZipArchiveMember *member =
+        &(*members)[*member_count];
+
+    memset(member, 0, sizeof(*member));
+
+    member->path = stored_path;
+    member->size = member_size;
+    member->checksum = member_checksum;
+    member->has_size = has_size;
+    member->has_checksum = has_checksum;
+
+    (*member_count)++;
+
+    return true;
+}
+
+static bool list_zip_archive_members(
+    const char *archive_path,
+    ZipArchiveMember **members_out,
+    size_t *member_count_out
+)
+{
+    if (archive_path == NULL ||
+        members_out == NULL ||
+        member_count_out == NULL) {
+        return false;
+    }
+
+    *members_out = NULL;
+    *member_count_out = 0;
+
+    char command[PATH_MAX * 2] = "";
+
+    snprintf(
+        command,
+        sizeof(command),
+        "%s l -slt ",
+        SEVEN_ZIP_PATH
+    );
+
+    if (!append_shell_quoted(
+            command,
+            sizeof(command),
+            archive_path)) {
+        return false;
+    }
+
+    strcat(command, " 2>/dev/null");
+
+    FILE *listing = popen(command, "r");
+
+    if (listing == NULL)
+        return false;
+
+    ZipArchiveMember *members = NULL;
+    size_t member_count = 0;
+    size_t member_capacity = 0;
+
+    char line[PATH_MAX + 64];
+    char current_path[PATH_MAX] = "";
+    uint64_t current_size = 0;
+    uint32_t current_checksum = 0;
+    bool current_is_file = false;
+    bool current_has_size = false;
+    bool current_has_checksum = false;
+    bool reading_members = false;
+    bool successful = true;
+
+    while (fgets(line, sizeof(line), listing) != NULL) {
+        trim_line_end(line);
+
+        if (strcmp(line, "----------") == 0) {
+            reading_members = true;
+            continue;
+        }
+
+        if (!reading_members)
+            continue;
+
+        if (line[0] == '\0') {
+            if (current_is_file &&
+                current_path[0] != '\0' &&
+                !append_zip_archive_member(
+                    &members,
+                    &member_count,
+                    &member_capacity,
+                    current_path,
+                    current_size,
+                    current_checksum,
+                    current_has_size,
+                    current_has_checksum)) {
+                successful = false;
+                break;
+            }
+
+            current_path[0] = '\0';
+            current_size = 0;
+            current_checksum = 0;
+            current_is_file = false;
+            current_has_size = false;
+            current_has_checksum = false;
+            continue;
+        }
+
+        if (strncmp(line, "Path = ", 7) == 0) {
+            snprintf(
+                current_path,
+                sizeof(current_path),
+                "%s",
+                line + 7
+            );
+        }
+        else if (strcmp(line, "Folder = -") == 0) {
+            current_is_file = true;
+        }
+        else if (strncmp(line, "Size = ", 7) == 0) {
+            char *end = NULL;
+
+            unsigned long long parsed =
+                strtoull(line + 7, &end, 10);
+
+            if (end != line + 7 && *end == '\0') {
+                current_size = (uint64_t)parsed;
+                current_has_size = true;
+            }
+        }
+        else if (strncmp(line, "CRC = ", 6) == 0) {
+            unsigned int parsed = 0;
+
+            if (sscanf(line + 6, "%x", &parsed) == 1) {
+                current_checksum = (uint32_t)parsed;
+                current_has_checksum = true;
+            }
+        }
+    }
+
+    if (successful &&
+        current_is_file &&
+        current_path[0] != '\0') {
+        successful = append_zip_archive_member(
+            &members,
+            &member_count,
+            &member_capacity,
+            current_path,
+            current_size,
+            current_checksum,
+            current_has_size,
+            current_has_checksum
+        );
+    }
+
+    int status = pclose(listing);
+
+    successful =
+        successful &&
+        status != -1 &&
+        WIFEXITED(status) &&
+        WEXITSTATUS(status) == 0 &&
+        member_count > 0;
+
+    if (!successful) {
+        free_zip_archive_members(
+            members,
+            member_count
+        );
+
+        return false;
+    }
+
+    *members_out = members;
+    *member_count_out = member_count;
+
+    return true;
+}
+
+static bool is_cue_member_path(const char *member_path)
+{
+    if (member_path == NULL)
+        return false;
+
+    const char *extension = strrchr(member_path, '.');
+
+    return extension != NULL &&
+           strcasecmp(extension, ".cue") == 0;
+}
+
+static const ZipArchiveMember *find_zip_archive_member(
+    const ZipArchiveMember *members,
+    size_t member_count,
+    const char *member_path
+)
+{
+    if (members == NULL || member_path == NULL)
+        return NULL;
+
+    for (size_t index = 0; index < member_count; index++) {
+        if (strcmp(members[index].path, member_path) == 0)
+            return &members[index];
+    }
+
+    return NULL;
+}
+
+static bool resolve_archive_member_path(
+    const char *descriptor_path,
+    const char *entry,
+    char *path_out,
+    size_t path_out_size
+)
+{
+    if (descriptor_path == NULL ||
+        entry == NULL ||
+        path_out == NULL ||
+        path_out_size == 0) {
+        return false;
+    }
+
+    char directory[PATH_MAX];
+
+    snprintf(
+        directory,
+        sizeof(directory),
+        "%s",
+        descriptor_path
+    );
+
+    normalize_path_separators(directory);
+
+    char *separator = strrchr(directory, '/');
+
+    if (separator != NULL)
+        separator[1] = '\0';
+    else
+        directory[0] = '\0';
+
+    while (entry[0] == '.' &&
+           entry[1] == '/') {
+        entry += 2;
+    }
+
+    int written = snprintf(
+        path_out,
+        path_out_size,
+        "%s%s",
+        directory,
+        entry
+    );
+
+    if (written < 0 ||
+        (size_t)written >= path_out_size) {
+        return false;
+    }
+
+    normalize_path_separators(path_out);
+
+    return true;
+}
+
+static bool calculate_zip_cue_identity(
+    const char *archive_path,
+    RomContentIdentity *identity
+)
+{
+    if (archive_path == NULL || identity == NULL)
+        return false;
+
+    ZipArchiveMember *members = NULL;
+    size_t member_count = 0;
+
+    if (!list_zip_archive_members(
+            archive_path,
+            &members,
+            &member_count)) {
+        return false;
+    }
+
+    const char *cue_member_path = NULL;
+    size_t cue_count = 0;
+
+    for (size_t index = 0; index < member_count; index++) {
+        if (is_cue_member_path(members[index].path)) {
+            cue_member_path = members[index].path;
+            cue_count++;
+        }
+    }
+
+    if (cue_count != 1) {
+        free_zip_archive_members(
+            members,
+            member_count
+        );
+
+        return false;
+    }
+
+    char command[PATH_MAX * 3] = "";
+
+    snprintf(
+        command,
+        sizeof(command),
+        "%s x -so ",
+        SEVEN_ZIP_PATH
+    );
+
+    if (!append_shell_quoted(
+            command,
+            sizeof(command),
+            archive_path)) {
+        free_zip_archive_members(
+            members,
+            member_count
+        );
+
+        return false;
+    }
+
+    strcat(command, " ");
+
+    if (!append_shell_quoted(
+            command,
+            sizeof(command),
+            cue_member_path)) {
+        free_zip_archive_members(
+            members,
+            member_count
+        );
+
+        return false;
+    }
+
+    strcat(command, " 2>/dev/null");
+
+    FILE *cue_stream = popen(command, "r");
+
+    if (cue_stream == NULL) {
+        free_zip_archive_members(
+            members,
+            member_count
+        );
+
+        return false;
+    }
+
+    uint64_t hash = UINT64_C(14695981039346656037);
+    uint64_t total_content_size = 0;
+    size_t file_count = 0;
+    char line[PATH_MAX * 2];
+    bool successful = true;
+
+    while (fgets(line, sizeof(line), cue_stream) != NULL) {
+        if (strchr(line, '\n') == NULL &&
+            !feof(cue_stream)) {
+            successful = false;
+            break;
+        }
+
+        trim_line_end(line);
+
+        char *cue_line = trim_playlist_entry(line);
+
+        if (cue_line[0] == '\0')
+            continue;
+
+        char referenced_entry[PATH_MAX];
+        char referenced_type[32];
+
+        if (!extract_cue_file_entry(
+                cue_line,
+                referenced_entry,
+                sizeof(referenced_entry),
+                referenced_type,
+                sizeof(referenced_type))) {
+            fnv1a64_update_text(&hash, cue_line);
+            continue;
+        }
+
+        char referenced_member_path[PATH_MAX];
+
+        if (!resolve_archive_member_path(
+                cue_member_path,
+                referenced_entry,
+                referenced_member_path,
+                sizeof(referenced_member_path))) {
+            successful = false;
+            break;
+        }
+
+        const ZipArchiveMember *referenced_member =
+            find_zip_archive_member(
+                members,
+                member_count,
+                referenced_member_path
+            );
+
+        if (referenced_member == NULL ||
+            !referenced_member->has_size ||
+            !referenced_member->has_checksum) {
+            successful = false;
+            break;
+        }
+
+        if (UINT64_MAX - total_content_size <
+            referenced_member->size) {
+            successful = false;
+            break;
+        }
+
+        char checksum_value[9];
+
+        snprintf(
+            checksum_value,
+            sizeof(checksum_value),
+            "%08x",
+            referenced_member->checksum
+        );
+
+        fnv1a64_update_text(&hash, "FILE");
+        fnv1a64_update_text(&hash, referenced_type);
+        fnv1a64_update_text(&hash, "crc32");
+        fnv1a64_update_text(&hash, checksum_value);
+
+        fnv1a64_update_uint64(
+            &hash,
+            referenced_member->size
+        );
+
+        total_content_size += referenced_member->size;
+        file_count++;
+    }
+
+    bool read_successfully = !ferror(cue_stream);
+    int status = pclose(cue_stream);
+
+    successful =
+        successful &&
+        read_successfully &&
+        status != -1 &&
+        WIFEXITED(status) &&
+        WEXITSTATUS(status) == 0 &&
+        file_count > 0;
+
+    if (successful) {
+        memset(identity, 0, sizeof(*identity));
+
+        snprintf(
+            identity->type,
+            sizeof(identity->type),
+            "%s",
+            "cue-fnv1a64"
+        );
+
+        snprintf(
+            identity->value,
+            sizeof(identity->value),
+            "%016llx",
+            (unsigned long long)hash
+        );
+
+        identity->content_size = total_content_size;
+    }
+
+    free_zip_archive_members(
+        members,
+        member_count
+    );
+
+    return successful;
 }
 
 static bool calculate_m3u_identity_internal(
@@ -1202,11 +1780,14 @@ static bool calculate_cue_source_signature(
             continue;
 
         char referenced_entry[PATH_MAX];
+        char referenced_type[32];
 
-        if (!extract_cue_file_path(
+        if (!extract_cue_file_entry(
                 cue_line,
                 referenced_entry,
-                sizeof(referenced_entry))) {
+                sizeof(referenced_entry),
+                referenced_type,
+                sizeof(referenced_type))) {
             fnv1a64_update_text(hash, cue_line);
             continue;
         }
@@ -1231,6 +1812,7 @@ static bool calculate_cue_source_signature(
 
         fnv1a64_update_text(hash, "FILE");
         fnv1a64_update_text(hash, referenced_path);
+        fnv1a64_update_text(hash, referenced_type);
 
         fnv1a64_update_uint64(
             hash,
@@ -1357,6 +1939,45 @@ static bool calculate_m3u_source_signature_internal(
     fclose(playlist);
 
     return read_successfully && entry_count > 0;
+}
+
+bool rom_identity_calculate_file_source_signature(
+    const char *rom_path,
+    char *signature_out,
+    size_t signature_out_size
+)
+{
+    if (rom_path == NULL ||
+        signature_out == NULL ||
+        signature_out_size < 17) {
+        return false;
+    }
+
+    struct stat file_status;
+
+    if (stat(rom_path, &file_status) != 0)
+        return false;
+
+    uint64_t hash = UINT64_C(14695981039346656037);
+
+    fnv1a64_update_uint64(
+        &hash,
+        (uint64_t)file_status.st_size
+    );
+
+    fnv1a64_update_uint64(
+        &hash,
+        (uint64_t)file_status.st_mtime
+    );
+
+    int written = snprintf(
+        signature_out,
+        signature_out_size,
+        "%016llx",
+        (unsigned long long)hash
+    );
+
+    return written == 16;
 }
 
 bool rom_identity_calculate_cue_source_signature(
