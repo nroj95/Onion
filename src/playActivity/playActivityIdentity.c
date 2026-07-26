@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 
@@ -647,6 +648,216 @@ bool rom_identity_calculate_zip(
     return true;
 }
 
+static char *trim_playlist_entry(char *text);
+
+static void fnv1a64_update_text(
+    uint64_t *hash,
+    const char *text
+);
+
+static void fnv1a64_update_uint64(
+    uint64_t *hash,
+    uint64_t value
+);
+
+static void normalize_path_separators(char *path);
+
+static bool resolve_playlist_entry_path(
+    const char *playlist_path,
+    const char *entry,
+    char *path_out,
+    size_t path_out_size
+);
+
+static bool extract_cue_file_path(
+    const char *line,
+    char *path_out,
+    size_t path_out_size
+)
+{
+    if (line == NULL ||
+        path_out == NULL ||
+        path_out_size == 0) {
+        return false;
+    }
+
+    while (isspace((unsigned char)*line))
+        line++;
+
+    if (strncasecmp(line, "FILE", 4) != 0 ||
+        !isspace((unsigned char)line[4])) {
+        return false;
+    }
+
+    line += 4;
+
+    while (isspace((unsigned char)*line))
+        line++;
+
+    if (*line == '\0')
+        return false;
+
+    const char *path_start = line;
+    const char *path_end = NULL;
+
+    if (*path_start == '"') {
+        path_start++;
+        path_end = strchr(path_start, '"');
+    }
+    else {
+        path_end = path_start;
+
+        while (*path_end != '\0' &&
+               !isspace((unsigned char)*path_end)) {
+            path_end++;
+        }
+    }
+
+    if (path_end == NULL || path_end == path_start)
+        return false;
+
+    size_t path_length = (size_t)(path_end - path_start);
+
+    if (path_length >= path_out_size)
+        return false;
+
+    memcpy(path_out, path_start, path_length);
+    path_out[path_length] = '\0';
+
+    normalize_path_separators(path_out);
+
+    return true;
+}
+
+static bool calculate_cue_identity_internal(
+    const char *rom_path,
+    RomContentIdentity *identity
+)
+{
+    if (rom_path == NULL || identity == NULL)
+        return false;
+
+    FILE *cue_file = fopen(rom_path, "r");
+
+    if (cue_file == NULL)
+        return false;
+
+    uint64_t hash = UINT64_C(14695981039346656037);
+    uint64_t total_content_size = 0;
+    size_t file_count = 0;
+    char line[PATH_MAX * 2];
+
+    while (fgets(line, sizeof(line), cue_file) != NULL) {
+        if (strchr(line, '\n') == NULL && !feof(cue_file)) {
+            fclose(cue_file);
+            return false;
+        }
+
+        trim_line_end(line);
+
+        char *cue_line = trim_playlist_entry(line);
+
+        if (cue_line[0] == '\0')
+            continue;
+
+        char referenced_entry[PATH_MAX];
+
+        if (!extract_cue_file_path(
+                cue_line,
+                referenced_entry,
+                sizeof(referenced_entry))) {
+            fnv1a64_update_text(&hash, cue_line);
+            continue;
+        }
+
+        char referenced_path[PATH_MAX];
+
+        if (!resolve_playlist_entry_path(
+                rom_path,
+                referenced_entry,
+                referenced_path,
+                sizeof(referenced_path))) {
+            fclose(cue_file);
+            return false;
+        }
+
+        RomContentIdentity referenced_identity;
+
+        if (!rom_identity_calculate_raw(
+                referenced_path,
+                &referenced_identity)) {
+            fprintf(
+                stderr,
+                "Warning: unable to fingerprint cue file entry: %s\n",
+                referenced_path
+            );
+
+            fclose(cue_file);
+            return false;
+        }
+
+        if (UINT64_MAX - total_content_size <
+            referenced_identity.content_size) {
+            fclose(cue_file);
+            return false;
+        }
+
+        fnv1a64_update_text(&hash, "FILE");
+        fnv1a64_update_text(
+            &hash,
+            referenced_identity.type
+        );
+        fnv1a64_update_text(
+            &hash,
+            referenced_identity.value
+        );
+        fnv1a64_update_uint64(
+            &hash,
+            referenced_identity.content_size
+        );
+
+        total_content_size += referenced_identity.content_size;
+        file_count++;
+    }
+
+    bool read_successfully = !ferror(cue_file);
+    fclose(cue_file);
+
+    if (!read_successfully || file_count == 0)
+        return false;
+
+    memset(identity, 0, sizeof(*identity));
+
+    snprintf(
+        identity->type,
+        sizeof(identity->type),
+        "%s",
+        "cue-fnv1a64"
+    );
+
+    snprintf(
+        identity->value,
+        sizeof(identity->value),
+        "%016llx",
+        (unsigned long long)hash
+    );
+
+    identity->content_size = total_content_size;
+
+    return true;
+}
+
+bool rom_identity_calculate_cue(
+    const char *rom_path,
+    RomContentIdentity *identity
+)
+{
+    return calculate_cue_identity_internal(
+        rom_path,
+        identity
+    );
+}
+
 #define M3U_MAX_NESTING_DEPTH 8
 
 static void fnv1a64_update(
@@ -799,6 +1010,9 @@ static bool calculate_referenced_identity(
     case ROM_IDENTITY_KIND_ZIP:
         return rom_identity_calculate_zip(rom_path, identity);
 
+    case ROM_IDENTITY_KIND_CUE:
+        return rom_identity_calculate_cue(rom_path, identity);
+
     case ROM_IDENTITY_KIND_M3U:
         return calculate_m3u_identity_internal(
             rom_path,
@@ -934,6 +1148,100 @@ static bool calculate_m3u_identity_internal(
     return true;
 }
 
+static bool calculate_cue_source_signature(
+    const char *rom_path,
+    uint64_t *hash
+)
+{
+    if (rom_path == NULL || hash == NULL)
+        return false;
+
+    struct stat cue_status;
+
+    if (stat(rom_path, &cue_status) != 0)
+        return false;
+
+    fnv1a64_update_uint64(
+        hash,
+        (uint64_t)cue_status.st_size
+    );
+
+    fnv1a64_update_uint64(
+        hash,
+        (uint64_t)cue_status.st_mtime
+    );
+
+    FILE *cue_file = fopen(rom_path, "r");
+
+    if (cue_file == NULL)
+        return false;
+
+    size_t file_count = 0;
+    char line[PATH_MAX * 2];
+
+    while (fgets(line, sizeof(line), cue_file) != NULL) {
+        if (strchr(line, '\n') == NULL && !feof(cue_file)) {
+            fclose(cue_file);
+            return false;
+        }
+
+        trim_line_end(line);
+
+        char *cue_line = trim_playlist_entry(line);
+
+        if (cue_line[0] == '\0')
+            continue;
+
+        char referenced_entry[PATH_MAX];
+
+        if (!extract_cue_file_path(
+                cue_line,
+                referenced_entry,
+                sizeof(referenced_entry))) {
+            fnv1a64_update_text(hash, cue_line);
+            continue;
+        }
+
+        char referenced_path[PATH_MAX];
+
+        if (!resolve_playlist_entry_path(
+                rom_path,
+                referenced_entry,
+                referenced_path,
+                sizeof(referenced_path))) {
+            fclose(cue_file);
+            return false;
+        }
+
+        struct stat referenced_status;
+
+        if (stat(referenced_path, &referenced_status) != 0) {
+            fclose(cue_file);
+            return false;
+        }
+
+        fnv1a64_update_text(hash, "FILE");
+        fnv1a64_update_text(hash, referenced_path);
+
+        fnv1a64_update_uint64(
+            hash,
+            (uint64_t)referenced_status.st_size
+        );
+
+        fnv1a64_update_uint64(
+            hash,
+            (uint64_t)referenced_status.st_mtime
+        );
+
+        file_count++;
+    }
+
+    bool read_successfully = !ferror(cue_file);
+    fclose(cue_file);
+
+    return read_successfully && file_count > 0;
+}
+
 static bool calculate_m3u_source_signature_internal(
     const char *rom_path,
     uint64_t *hash,
@@ -1001,6 +1309,14 @@ static bool calculate_m3u_source_signature_internal(
                     referenced_path,
                     hash,
                     depth + 1)) {
+                fclose(playlist);
+                return false;
+            }
+        }
+        else if (context.kind == ROM_IDENTITY_KIND_CUE) {
+            if (!calculate_cue_source_signature(
+                    referenced_path,
+                    hash)) {
                 fclose(playlist);
                 return false;
             }
@@ -1120,6 +1436,9 @@ bool rom_identity_context_build(
     else if (strcmp(context->extension, "zip") == 0) {
         context->kind = ROM_IDENTITY_KIND_ZIP;
     }
+    else if (strcmp(context->extension, "cue") == 0) {
+        context->kind = ROM_IDENTITY_KIND_CUE;
+    }
     else if (strcmp(context->extension, "m3u") == 0 ||
              strcmp(context->extension, "m3u8") == 0) {
         context->kind = ROM_IDENTITY_KIND_M3U;
@@ -1139,6 +1458,9 @@ const char *rom_identity_kind_name(RomIdentityKind kind)
 
     case ROM_IDENTITY_KIND_ZIP:
         return "zip";
+
+    case ROM_IDENTITY_KIND_CUE:
+        return "cue";
 
     case ROM_IDENTITY_KIND_M3U:
         return "m3u";

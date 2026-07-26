@@ -62,6 +62,11 @@ static bool calculate_content_identity(
             rom_identity_calculate_zip(rom_path, identity);
         break;
 
+    case ROM_IDENTITY_KIND_CUE:
+        calculated =
+            rom_identity_calculate_cue(rom_path, identity);
+        break;
+
     case ROM_IDENTITY_KIND_M3U:
         calculated =
             rom_identity_calculate_m3u(rom_path, identity);
@@ -241,7 +246,7 @@ static int resolve_rom_for_start(const char *rom_path)
             play_activity_identity_source_matches(
                 play_activity_db,
                 rom_id,
-                "m3u-stat-v1",
+                "m3u-stat-v2",
                 source_signature)) {
             identity_reused = play_activity_identity_load(
                 play_activity_db,
@@ -367,7 +372,7 @@ static int resolve_rom_for_start(const char *rom_path)
             if (!play_activity_identity_source_store(
                     play_activity_db,
                     rom_id,
-                    "m3u-stat-v1",
+                    "m3u-stat-v2",
                     source_signature)) {
                 fprintf(
                     stderr,
