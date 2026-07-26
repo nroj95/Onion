@@ -27,6 +27,7 @@ common_flags := \
 sources := \
 	test_identity.c \
 	../../src/playActivity/playActivityIdentity.c \
+	../../src/playActivity/playActivitySchema.c \
 	../../src/common/utils/file.c \
 	../../src/common/utils/str.c \
 	../../src/common/utils/log.c
@@ -37,8 +38,10 @@ objects := $(addprefix $(build_directory)/,$(sources:.c=.o))
 
 all: $(target)
 
+sqlite_library := /usr/lib/x86_64-linux-gnu/libsqlite3.so.0
+
 $(target): $(objects)
-	$(compiler) $(objects) -o $@
+	$(compiler) $(objects) $(sqlite_library) -o $@
 
 $(build_directory)/%.o: %.c
 	@mkdir -p "$(dir $@)"
