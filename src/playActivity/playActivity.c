@@ -49,10 +49,29 @@ static bool calculate_content_identity(
         return false;
     }
 
-    bool calculated =
-        context.kind == ROM_IDENTITY_KIND_RAW
-            ? rom_identity_calculate_raw(rom_path, identity)
-            : rom_identity_calculate_zip(rom_path, identity);
+    bool calculated = false;
+
+    switch (context.kind) {
+    case ROM_IDENTITY_KIND_RAW:
+        calculated =
+            rom_identity_calculate_raw(rom_path, identity);
+        break;
+
+    case ROM_IDENTITY_KIND_ZIP:
+        calculated =
+            rom_identity_calculate_zip(rom_path, identity);
+        break;
+
+    case ROM_IDENTITY_KIND_M3U:
+        calculated =
+            rom_identity_calculate_m3u(rom_path, identity);
+        break;
+
+    case ROM_IDENTITY_KIND_ARCADE:
+    case ROM_IDENTITY_KIND_UNSUPPORTED:
+    default:
+        break;
+    }
 
     if (!calculated) {
         fprintf(

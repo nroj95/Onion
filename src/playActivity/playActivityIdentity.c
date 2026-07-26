@@ -646,6 +646,305 @@ bool rom_identity_calculate_zip(
     return true;
 }
 
+#define M3U_MAX_NESTING_DEPTH 8
+
+static void fnv1a64_update(
+    uint64_t *hash,
+    const void *data,
+    size_t data_size
+)
+{
+    const unsigned char *bytes = data;
+
+    for (size_t index = 0; index < data_size; index++) {
+        *hash ^= bytes[index];
+        *hash *= UINT64_C(1099511628211);
+    }
+}
+
+static void fnv1a64_update_text(
+    uint64_t *hash,
+    const char *text
+)
+{
+    fnv1a64_update(hash, text, strlen(text));
+
+    const unsigned char separator = 0;
+    fnv1a64_update(hash, &separator, sizeof(separator));
+}
+
+static void fnv1a64_update_uint64(
+    uint64_t *hash,
+    uint64_t value
+)
+{
+    unsigned char bytes[8];
+
+    for (size_t index = 0; index < sizeof(bytes); index++) {
+        bytes[index] = (unsigned char)(value & UINT64_C(0xff));
+        value >>= 8U;
+    }
+
+    fnv1a64_update(hash, bytes, sizeof(bytes));
+}
+
+static char *trim_playlist_entry(char *text)
+{
+    while (isspace((unsigned char)*text))
+        text++;
+
+    size_t length = strlen(text);
+
+    while (length > 0 &&
+           isspace((unsigned char)text[length - 1])) {
+        text[--length] = '\0';
+    }
+
+    return text;
+}
+
+static void normalize_path_separators(char *path)
+{
+    for (size_t index = 0; path[index] != '\0'; index++) {
+        if (path[index] == '\\')
+            path[index] = '/';
+    }
+}
+
+static bool resolve_playlist_entry_path(
+    const char *playlist_path,
+    const char *entry,
+    char *path_out,
+    size_t path_out_size
+)
+{
+    if (playlist_path == NULL ||
+        entry == NULL ||
+        path_out == NULL ||
+        path_out_size == 0) {
+        return false;
+    }
+
+    if (entry[0] == '/') {
+        int written = snprintf(
+            path_out,
+            path_out_size,
+            "%s",
+            entry
+        );
+
+        if (written < 0 || (size_t)written >= path_out_size)
+            return false;
+
+        normalize_path_separators(path_out);
+        return true;
+    }
+
+    char directory[PATH_MAX];
+
+    int copied = snprintf(
+        directory,
+        sizeof(directory),
+        "%s",
+        playlist_path
+    );
+
+    if (copied < 0 || (size_t)copied >= sizeof(directory))
+        return false;
+
+    char *separator = strrchr(directory, '/');
+
+    if (separator != NULL)
+        separator[1] = '\0';
+    else
+        directory[0] = '\0';
+
+    int written = snprintf(
+        path_out,
+        path_out_size,
+        "%s%s",
+        directory,
+        entry
+    );
+
+    if (written < 0 || (size_t)written >= path_out_size)
+        return false;
+
+    normalize_path_separators(path_out);
+    return true;
+}
+
+static bool calculate_m3u_identity_internal(
+    const char *rom_path,
+    RomContentIdentity *identity,
+    unsigned int depth
+);
+
+static bool calculate_referenced_identity(
+    const char *rom_path,
+    RomContentIdentity *identity,
+    unsigned int depth
+)
+{
+    RomIdentityContext context;
+
+    if (!rom_identity_context_build(rom_path, &context))
+        return false;
+
+    switch (context.kind) {
+    case ROM_IDENTITY_KIND_RAW:
+        return rom_identity_calculate_raw(rom_path, identity);
+
+    case ROM_IDENTITY_KIND_ZIP:
+        return rom_identity_calculate_zip(rom_path, identity);
+
+    case ROM_IDENTITY_KIND_M3U:
+        return calculate_m3u_identity_internal(
+            rom_path,
+            identity,
+            depth + 1
+        );
+
+    case ROM_IDENTITY_KIND_ARCADE:
+    case ROM_IDENTITY_KIND_UNSUPPORTED:
+    default:
+        return false;
+    }
+}
+
+static bool calculate_m3u_identity_internal(
+    const char *rom_path,
+    RomContentIdentity *identity,
+    unsigned int depth
+)
+{
+    if (rom_path == NULL ||
+        identity == NULL ||
+        depth > M3U_MAX_NESTING_DEPTH) {
+        return false;
+    }
+
+    FILE *playlist = fopen(rom_path, "r");
+
+    if (playlist == NULL)
+        return false;
+
+    uint64_t hash = UINT64_C(14695981039346656037);
+    uint64_t total_content_size = 0;
+    size_t entry_count = 0;
+    char line[PATH_MAX * 2];
+
+    while (fgets(line, sizeof(line), playlist) != NULL) {
+        if (strchr(line, '\n') == NULL && !feof(playlist)) {
+            fclose(playlist);
+            return false;
+        }
+
+        trim_line_end(line);
+
+        char *entry = trim_playlist_entry(line);
+
+        if (entry_count == 0 &&
+            (unsigned char)entry[0] == 0xef &&
+            (unsigned char)entry[1] == 0xbb &&
+            (unsigned char)entry[2] == 0xbf) {
+            entry += 3;
+        }
+
+        if (entry[0] == '\0' || entry[0] == '#')
+            continue;
+
+        char referenced_path[PATH_MAX];
+
+        if (!resolve_playlist_entry_path(
+                rom_path,
+                entry,
+                referenced_path,
+                sizeof(referenced_path))) {
+            fclose(playlist);
+            return false;
+        }
+
+        RomContentIdentity referenced_identity;
+
+        if (!calculate_referenced_identity(
+                referenced_path,
+                &referenced_identity,
+                depth)) {
+            fprintf(
+                stderr,
+                "Warning: unable to fingerprint playlist entry: %s\n",
+                referenced_path
+            );
+
+            fclose(playlist);
+            return false;
+        }
+
+        if (UINT64_MAX - total_content_size <
+            referenced_identity.content_size) {
+            fclose(playlist);
+            return false;
+        }
+
+        fnv1a64_update_text(
+            &hash,
+            referenced_identity.type
+        );
+
+        fnv1a64_update_text(
+            &hash,
+            referenced_identity.value
+        );
+
+        fnv1a64_update_uint64(
+            &hash,
+            referenced_identity.content_size
+        );
+
+        total_content_size += referenced_identity.content_size;
+        entry_count++;
+    }
+
+    bool read_successfully = !ferror(playlist);
+    fclose(playlist);
+
+    if (!read_successfully || entry_count == 0)
+        return false;
+
+    memset(identity, 0, sizeof(*identity));
+
+    snprintf(
+        identity->type,
+        sizeof(identity->type),
+        "%s",
+        "m3u-fnv1a64"
+    );
+
+    snprintf(
+        identity->value,
+        sizeof(identity->value),
+        "%016llx",
+        (unsigned long long)hash
+    );
+
+    identity->content_size = total_content_size;
+
+    return true;
+}
+
+bool rom_identity_calculate_m3u(
+    const char *rom_path,
+    RomContentIdentity *identity
+)
+{
+    return calculate_m3u_identity_internal(
+        rom_path,
+        identity,
+        0
+    );
+}
+
 bool rom_identity_context_build(
     const char *rom_path,
     RomIdentityContext *context
@@ -685,6 +984,10 @@ bool rom_identity_context_build(
     else if (strcmp(context->extension, "zip") == 0) {
         context->kind = ROM_IDENTITY_KIND_ZIP;
     }
+    else if (strcmp(context->extension, "m3u") == 0 ||
+             strcmp(context->extension, "m3u8") == 0) {
+        context->kind = ROM_IDENTITY_KIND_M3U;
+    }
     else if (context->extension[0] != '\0') {
         context->kind = ROM_IDENTITY_KIND_RAW;
     }
@@ -700,6 +1003,9 @@ const char *rom_identity_kind_name(RomIdentityKind kind)
 
     case ROM_IDENTITY_KIND_ZIP:
         return "zip";
+
+    case ROM_IDENTITY_KIND_M3U:
+        return "m3u";
 
     case ROM_IDENTITY_KIND_ARCADE:
         return "arcade";

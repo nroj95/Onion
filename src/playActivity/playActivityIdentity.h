@@ -27,6 +27,7 @@ typedef enum {
     ROM_IDENTITY_KIND_UNSUPPORTED = 0,
     ROM_IDENTITY_KIND_RAW,
     ROM_IDENTITY_KIND_ZIP,
+    ROM_IDENTITY_KIND_M3U,
     ROM_IDENTITY_KIND_ARCADE
 } RomIdentityKind;
 
@@ -54,6 +55,11 @@ bool rom_identity_calculate_raw(
 );
 
 bool rom_identity_calculate_zip(
+    const char *rom_path,
+    RomContentIdentity *identity
+);
+
+bool rom_identity_calculate_m3u(
     const char *rom_path,
     RomContentIdentity *identity
 );
