@@ -3,9 +3,12 @@
 #include <stdio.h>
 #include <string.h>
 
+#define STRINGIFY_VALUE_INNER(value) #value
+#define STRINGIFY_VALUE(value) STRINGIFY_VALUE_INNER(value)
+
 /* =============================================================================
  * purpose:
- * create the first version of the activity tracker identity schema.
+ * create and update the activity tracker identity schema.
  *
  * key behavior:
  * - stores one stable content identity per tracked rom row.
@@ -63,16 +66,12 @@ bool play_activity_identity_schema_ensure(sqlite3 *database)
         "    rom_id INTEGER PRIMARY KEY,"
         "    identity_type TEXT NOT NULL,"
         "    identity_value TEXT NOT NULL,"
-        "    content_size INTEGER,"
+        "    content_size INTEGER NOT NULL,"
         "    modified_time INTEGER,"
         "    created_at INTEGER DEFAULT (strftime('%s', 'now')),"
         "    updated_at INTEGER,"
-        "    UNIQUE(identity_type, identity_value)"
+        "    UNIQUE(identity_type, identity_value, content_size)"
         ");"
-
-        "CREATE INDEX IF NOT EXISTS "
-        "rom_identity_value_index "
-        "ON rom_identity(identity_type, identity_value);"
 
         "CREATE TABLE IF NOT EXISTS rom_identity_source("
         "    rom_id INTEGER PRIMARY KEY,"
@@ -93,8 +92,18 @@ bool play_activity_identity_schema_ensure(sqlite3 *database)
         "rom_path_history_rom_id_index "
         "ON rom_path_history(rom_id);"
 
+        "CREATE TABLE IF NOT EXISTS rom_asset_migration("
+        "    rom_id INTEGER PRIMARY KEY,"
+        "    old_file_path TEXT NOT NULL,"
+        "    new_file_path TEXT NOT NULL,"
+        "    created_at INTEGER DEFAULT (strftime('%s', 'now')),"
+        "    updated_at INTEGER"
+        ");"
+
         "INSERT INTO identity_metadata(key, value) "
-        "VALUES('schema_version', '2') "
+        "VALUES('schema_version', '"
+            STRINGIFY_VALUE(PLAY_ACTIVITY_IDENTITY_SCHEMA_VERSION)
+        "') "
         "ON CONFLICT(key) DO UPDATE SET value = excluded.value;"
 
         "COMMIT;";
@@ -519,6 +528,7 @@ int play_activity_identity_find_rom_id(
         "FROM rom_identity "
         "WHERE identity_type = ?1 "
         "  AND identity_value = ?2 "
+        "  AND content_size = ?3 "
         "LIMIT 1;";
 
     sqlite3_stmt *statement = NULL;
@@ -549,6 +559,12 @@ int play_activity_identity_find_rom_id(
         SQLITE_TRANSIENT
     );
 
+    sqlite3_bind_int64(
+        statement,
+        3,
+        (sqlite3_int64)identity->content_size
+    );
+
     int rom_id = -1;
 
     if (sqlite3_step(statement) == SQLITE_ROW)
@@ -559,6 +575,261 @@ int play_activity_identity_find_rom_id(
     return rom_id;
 }
 
+
+
+static bool file_stems_match(
+    const char *first_path,
+    const char *second_path
+)
+{
+    if (first_path == NULL || second_path == NULL)
+        return false;
+
+    const char *first_name = strrchr(first_path, '/');
+    const char *second_name = strrchr(second_path, '/');
+
+    first_name =
+        first_name != NULL
+            ? first_name + 1
+            : first_path;
+
+    second_name =
+        second_name != NULL
+            ? second_name + 1
+            : second_path;
+
+    size_t first_length = strlen(first_name);
+    size_t second_length = strlen(second_name);
+
+    const char *first_extension = strrchr(first_name, '.');
+    const char *second_extension = strrchr(second_name, '.');
+
+    if (first_extension != NULL &&
+        first_extension != first_name) {
+        first_length =
+            (size_t)(first_extension - first_name);
+    }
+
+    if (second_extension != NULL &&
+        second_extension != second_name) {
+        second_length =
+            (size_t)(second_extension - second_name);
+    }
+
+    return first_length == second_length &&
+           strncmp(
+               first_name,
+               second_name,
+               first_length
+           ) == 0;
+}
+
+bool play_activity_asset_migration_load(
+    sqlite3 *database,
+    int rom_id,
+    char *old_file_path_out,
+    size_t old_file_path_out_size,
+    char *new_file_path_out,
+    size_t new_file_path_out_size
+)
+{
+    if (old_file_path_out != NULL &&
+        old_file_path_out_size > 0) {
+        old_file_path_out[0] = '\0';
+    }
+
+    if (new_file_path_out != NULL &&
+        new_file_path_out_size > 0) {
+        new_file_path_out[0] = '\0';
+    }
+
+    if (database == NULL ||
+        rom_id < 0 ||
+        old_file_path_out == NULL ||
+        old_file_path_out_size == 0 ||
+        new_file_path_out == NULL ||
+        new_file_path_out_size == 0) {
+        return false;
+    }
+
+    const char *sql =
+        "SELECT old_file_path, new_file_path "
+        "FROM rom_asset_migration "
+        "WHERE rom_id = ?1 "
+        "LIMIT 1;";
+
+    sqlite3_stmt *statement = NULL;
+
+    if (sqlite3_prepare_v2(
+            database,
+            sql,
+            -1,
+            &statement,
+            NULL
+        ) != SQLITE_OK) {
+        return false;
+    }
+
+    sqlite3_bind_int(statement, 1, rom_id);
+
+    bool found = false;
+
+    if (sqlite3_step(statement) == SQLITE_ROW) {
+        const unsigned char *old_file_path =
+            sqlite3_column_text(statement, 0);
+
+        const unsigned char *new_file_path =
+            sqlite3_column_text(statement, 1);
+
+        if (old_file_path != NULL &&
+            new_file_path != NULL) {
+            snprintf(
+                old_file_path_out,
+                old_file_path_out_size,
+                "%s",
+                (const char *)old_file_path
+            );
+
+            snprintf(
+                new_file_path_out,
+                new_file_path_out_size,
+                "%s",
+                (const char *)new_file_path
+            );
+
+            found = true;
+        }
+    }
+
+    sqlite3_finalize(statement);
+
+    return found;
+}
+
+bool play_activity_asset_migration_delete(
+    sqlite3 *database,
+    int rom_id
+)
+{
+    if (database == NULL || rom_id < 0)
+        return false;
+
+    const char *sql =
+        "DELETE FROM rom_asset_migration "
+        "WHERE rom_id = ?1;";
+
+    sqlite3_stmt *statement = NULL;
+
+    if (sqlite3_prepare_v2(
+            database,
+            sql,
+            -1,
+            &statement,
+            NULL
+        ) != SQLITE_OK) {
+        return false;
+    }
+
+    sqlite3_bind_int(statement, 1, rom_id);
+
+    int result = sqlite3_step(statement);
+
+    sqlite3_finalize(statement);
+
+    return result == SQLITE_DONE;
+}
+
+bool play_activity_asset_migration_store(
+    sqlite3 *database,
+    int rom_id,
+    const char *old_file_path,
+    const char *new_file_path
+)
+{
+    if (database == NULL ||
+        rom_id < 0 ||
+        old_file_path == NULL ||
+        new_file_path == NULL ||
+        old_file_path[0] == '\0' ||
+        new_file_path[0] == '\0') {
+        return false;
+    }
+
+    char stored_old_file_path[4096] = "";
+    char stored_new_file_path[4096] = "";
+
+    bool migration_exists =
+        play_activity_asset_migration_load(
+            database,
+            rom_id,
+            stored_old_file_path,
+            sizeof(stored_old_file_path),
+            stored_new_file_path,
+            sizeof(stored_new_file_path)
+        );
+
+    if (!migration_exists &&
+        file_stems_match(
+            old_file_path,
+            new_file_path
+        )) {
+        return true;
+    }
+
+    const char *sql =
+        "INSERT INTO rom_asset_migration("
+        "    rom_id,"
+        "    old_file_path,"
+        "    new_file_path,"
+        "    updated_at"
+        ") VALUES("
+        "    ?1,"
+        "    ?2,"
+        "    ?3,"
+        "    strftime('%s', 'now')"
+        ") "
+        "ON CONFLICT(rom_id) DO UPDATE SET "
+        "    new_file_path = excluded.new_file_path,"
+        "    updated_at = excluded.updated_at;";
+
+    sqlite3_stmt *statement = NULL;
+
+    if (sqlite3_prepare_v2(
+            database,
+            sql,
+            -1,
+            &statement,
+            NULL
+        ) != SQLITE_OK) {
+        return false;
+    }
+
+    sqlite3_bind_int(statement, 1, rom_id);
+
+    sqlite3_bind_text(
+        statement,
+        2,
+        migration_exists
+            ? stored_old_file_path
+            : old_file_path,
+        -1,
+        SQLITE_TRANSIENT
+    );
+
+    sqlite3_bind_text(
+        statement,
+        3,
+        new_file_path,
+        -1,
+        SQLITE_TRANSIENT
+    );
+
+    int result = sqlite3_step(statement);
+
+    sqlite3_finalize(statement);
+
+    return result == SQLITE_DONE;
+}
 
 bool play_activity_identity_merge_roms(
     sqlite3 *database,
@@ -626,6 +897,30 @@ bool play_activity_identity_merge_roms(
             -1,
             &statement,
             NULL) != SQLITE_OK) {
+        success = false;
+    }
+    else if (success) {
+        sqlite3_bind_int(statement, 1, survivor_rom_id);
+        sqlite3_bind_int(statement, 2, redundant_rom_id);
+        success = sqlite3_step(statement) == SQLITE_DONE;
+    }
+
+    sqlite3_finalize(statement);
+    statement = NULL;
+
+
+    const char *delete_migrations_sql =
+        "DELETE FROM rom_asset_migration "
+        "WHERE rom_id = ?1 OR rom_id = ?2;";
+
+    if (success &&
+        sqlite3_prepare_v2(
+            database,
+            delete_migrations_sql,
+            -1,
+            &statement,
+            NULL
+        ) != SQLITE_OK) {
         success = false;
     }
     else if (success) {
@@ -708,6 +1003,21 @@ bool play_activity_identity_merge_roms(
         current_file_path[0] != '\0' &&
         strcmp(redundant_file_path, current_file_path) != 0) {
         success = play_activity_identity_record_path_change(
+            database,
+            survivor_rom_id,
+            redundant_file_path,
+            current_file_path
+        );
+    }
+
+
+    if (success &&
+        redundant_file_path != NULL &&
+        current_file_path != NULL &&
+        redundant_file_path[0] != '\0' &&
+        current_file_path[0] != '\0' &&
+        strcmp(redundant_file_path, current_file_path) != 0) {
+        success = play_activity_asset_migration_store(
             database,
             survivor_rom_id,
             redundant_file_path,
@@ -805,5 +1115,13 @@ bool play_activity_identity_record_path_change(
 
     sqlite3_finalize(statement);
 
-    return result == SQLITE_DONE;
+    if (result != SQLITE_DONE)
+        return false;
+
+    return play_activity_asset_migration_store(
+        database,
+        rom_id,
+        old_file_path,
+        new_file_path
+    );
 }

@@ -230,6 +230,26 @@ void test_identity_rom_merge(void)
         "store pre-merge source rows"
     );
 
+
+    bool stale_migrations_created =
+        play_activity_asset_migration_store(
+            database,
+            10,
+            "/Roms/FC/stale-survivor.zip",
+            "/Roms/FC/current.zip"
+        ) &&
+        play_activity_asset_migration_store(
+            database,
+            20,
+            "/Roms/FC/older-name.zip",
+            "/Roms/FC/old-name.zip"
+        );
+
+    check_condition(
+        stale_migrations_created,
+        "store pre-merge asset migrations"
+    );
+
     RomContentIdentity final_identity;
     memset(&final_identity, 0, sizeof(final_identity));
 
@@ -336,6 +356,38 @@ void test_identity_rom_merge(void)
             "WHERE rom_id IN (10, 20);"
         ) == 0,
         "merge removes stale source signatures"
+    );
+
+
+    char merged_old_path[512] = "";
+    char merged_new_path[512] = "";
+
+    check_condition(
+        play_activity_asset_migration_load(
+            database,
+            10,
+            merged_old_path,
+            sizeof(merged_old_path),
+            merged_new_path,
+            sizeof(merged_new_path)
+        ) &&
+        strcmp(
+            merged_old_path,
+            "/Roms/FC/old-name.zip"
+        ) == 0 &&
+        strcmp(
+            merged_new_path,
+            "/Roms/FC/current.zip"
+        ) == 0 &&
+        !play_activity_asset_migration_load(
+            database,
+            20,
+            merged_old_path,
+            sizeof(merged_old_path),
+            merged_new_path,
+            sizeof(merged_new_path)
+        ),
+        "merge replaces stale asset migrations"
     );
 
     RomContentIdentity loaded_identity;

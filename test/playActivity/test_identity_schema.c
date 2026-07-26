@@ -131,7 +131,8 @@ void test_identity_schema_storage(void)
         sqlite_table_exists(database, "identity_metadata") &&
         sqlite_table_exists(database, "rom_identity") &&
         sqlite_table_exists(database, "rom_identity_source") &&
-        sqlite_table_exists(database, "rom_path_history");
+        sqlite_table_exists(database, "rom_path_history") &&
+        sqlite_table_exists(database, "rom_asset_migration");
 
     check_condition(
         tables_exist,
@@ -139,8 +140,8 @@ void test_identity_schema_storage(void)
     );
 
     check_condition(
-        sqlite_schema_version_matches(database, "2"),
-        "identity schema stores version 2"
+        sqlite_schema_version_matches(database, "4"),
+        "identity schema stores version 4"
     );
 
     RomContentIdentity stored_identity;
@@ -313,6 +314,106 @@ void test_identity_schema_storage(void)
         ),
         "deleted source signature stops matching"
     );
+
+    check_condition(
+        play_activity_asset_migration_store(
+            database,
+            7,
+            "/Roms/FC/original-name.zip",
+            "/Roms/FC/renamed.zip"
+        ),
+        "store pending asset migration"
+    );
+
+    char old_migration_path[512] = "";
+    char new_migration_path[512] = "";
+
+    check_condition(
+        play_activity_asset_migration_load(
+            database,
+            7,
+            old_migration_path,
+            sizeof(old_migration_path),
+            new_migration_path,
+            sizeof(new_migration_path)
+        ),
+        "load pending asset migration"
+    );
+
+    check_condition(
+        strcmp(
+            old_migration_path,
+            "/Roms/FC/original-name.zip"
+        ) == 0 &&
+        strcmp(
+            new_migration_path,
+            "/Roms/FC/renamed.zip"
+        ) == 0,
+        "pending migration stores path transition"
+    );
+
+    check_condition(
+        play_activity_asset_migration_store(
+            database,
+            7,
+            "/Roms/FC/renamed.zip",
+            "/Roms/FC/final-name.zip"
+        ),
+        "advance pending asset migration"
+    );
+
+    check_condition(
+        play_activity_asset_migration_load(
+            database,
+            7,
+            old_migration_path,
+            sizeof(old_migration_path),
+            new_migration_path,
+            sizeof(new_migration_path
+            )
+        ) &&
+        strcmp(
+            old_migration_path,
+            "/Roms/FC/original-name.zip"
+        ) == 0 &&
+        strcmp(
+            new_migration_path,
+            "/Roms/FC/final-name.zip"
+        ) == 0,
+        "repeated rename keeps original source"
+    );
+
+    check_condition(
+        play_activity_asset_migration_delete(
+            database,
+            7
+        ),
+        "delete pending asset migration"
+    );
+
+    check_condition(
+        play_activity_asset_migration_store(
+            database,
+            8,
+            "/Roms/FC/folder/game.zip",
+            "/Roms/FC/other/game.zip"
+        ),
+        "accept folder-only path change"
+    );
+
+    check_condition(
+        !play_activity_asset_migration_load(
+            database,
+            8,
+            old_migration_path,
+            sizeof(old_migration_path),
+            new_migration_path,
+            sizeof(new_migration_path)
+        ),
+        "folder-only move creates no migration"
+    );
+
+
 
     sqlite3_close(database);
 }

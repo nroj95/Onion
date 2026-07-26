@@ -3,6 +3,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <stddef.h>
 
 #include <sqlite3/sqlite3.h>
 
@@ -20,7 +21,7 @@
  * =============================================================================
  */
 
-#define PLAY_ACTIVITY_IDENTITY_SCHEMA_VERSION 2
+#define PLAY_ACTIVITY_IDENTITY_SCHEMA_VERSION 4
 
 bool play_activity_identity_schema_ensure(sqlite3 *database);
 
@@ -77,6 +78,28 @@ bool play_activity_identity_merge_roms(
     int64_t modified_time,
     const char *redundant_file_path,
     const char *current_file_path
+);
+
+
+bool play_activity_asset_migration_store(
+    sqlite3 *database,
+    int rom_id,
+    const char *old_file_path,
+    const char *new_file_path
+);
+
+bool play_activity_asset_migration_load(
+    sqlite3 *database,
+    int rom_id,
+    char *old_file_path_out,
+    size_t old_file_path_out_size,
+    char *new_file_path_out,
+    size_t new_file_path_out_size
+);
+
+bool play_activity_asset_migration_delete(
+    sqlite3 *database,
+    int rom_id
 );
 
 bool play_activity_identity_record_path_change(
