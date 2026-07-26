@@ -17,5 +17,6 @@ void test_cue_identity(void);
 void test_m3u_identity(void);
 void test_identity_schema_storage(void);
 void test_identity_rom_merge(void);
+void test_history_core_lookup(void);
 
 #endif

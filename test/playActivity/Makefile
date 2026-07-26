@@ -32,9 +32,12 @@ sources := \
 	test_identity_m3u.c \
 	test_identity_schema.c \
 	test_identity_merge.c \
+	test_identity_history.c \
 	test_support.c \
 	../../src/playActivity/playActivityIdentity.c \
 	../../src/playActivity/playActivitySchema.c \
+	../../src/playActivity/playActivityHistory.c \
+	../../include/cjson/cJSON.c \
 	../../src/common/utils/file.c \
 	../../src/common/utils/str.c \
 	../../src/common/utils/log.c
