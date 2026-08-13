@@ -19,6 +19,13 @@
 #include <string.h>
 #include <unistd.h>
 
+#ifndef LOG_DEBUG
+#undef START_TIMER
+#undef END_TIMER
+#define START_TIMER(timer_name)
+#define END_TIMER(timer_name)
+#endif
+
 #define HIDE_SPLASH_FLAG "/mnt/SDCARD/Saves/CurrentProfile/config/.emusortHideSplash"
 #define EMU_DIR "/mnt/SDCARD/Emu"
 #define MAX_EMU_COUNT 200
