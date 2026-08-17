@@ -12,5 +12,4 @@
 
 /mnt/SDCARD/.tmp_update/bin/tweaks \
     --process_favorites \
-    --no_display \
     >/dev/null 2>&1

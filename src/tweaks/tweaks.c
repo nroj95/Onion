@@ -86,8 +86,10 @@ int main(int argc, char *argv[])
     signal(SIGINT, sigHandler);
     signal(SIGTERM, sigHandler);
 
-    if (use_display)
+    if (use_display ||
+        (strlen(apply_tool) == 0 && !process_favorites)) {
         SDL_InitDefault();
+    }
 
     settings_load();
 

@@ -1011,7 +1011,7 @@ void menu_userInterface(void *_)
     settings.blue_light_state = config_flag_get(".blfOn");
     all_changed = true;
     if (!_menu_user_interface._created) {
-        _menu_user_interface = list_createWithTitle(7, LIST_SMALL, "Appearance");
+        _menu_user_interface = list_createWithTitle(6, LIST_SMALL, "Appearance");
         list_addItemWithInfoNote(&_menu_user_interface,
                                  (ListItem){
                                      .label = "Show recents",
@@ -1052,10 +1052,6 @@ void menu_userInterface(void *_)
                      (ListItem){
                          .label = "Icons packs...",
                          .action = menu_icons});
-        list_addItem(&_menu_user_interface,
-                     (ListItem){
-                         .label = "Favorites manager...",
-                         .action = menu_favouritesManager});
     }
     menu_stack[++menu_level] = &_menu_user_interface;
     header_changed = true;
@@ -1319,8 +1315,15 @@ void menu_tools_m3uGenerator(void *_)
 void menu_tools(void *_)
 {
     if (!_menu_tools._created) {
-        _menu_tools = list_create(NUM_TOOLS, LIST_SMALL);
+        _menu_tools = list_create(NUM_TOOLS + 1, LIST_SMALL);
         strcpy(_menu_tools.title, "Tools");
+
+        list_addItemWithInfoNote(
+            &_menu_tools,
+            (ListItem){
+                .label = "Favorites manager...",
+                .action = menu_favouritesManager},
+            "Sort, organize, and clean the favorites list.");
         list_addItemWithInfoNote(&_menu_tools,
                                  (ListItem){
                                      .label = "Generate CUE files for BIN games",
