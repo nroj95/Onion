@@ -20,13 +20,15 @@
 #define FAVOURITES_BACKUP_PATH \
     "/mnt/SDCARD/Roms/favourite.json.bak"
 
+#define FAVOURITES_BACKUP_TEMP_PATH \
+    "/mnt/SDCARD/Roms/favourite.json.bak.tmp"
+
 typedef struct favourites_result_s {
     int entries;
     int kept;
     int duplicates;
     int missing;
     int malformed;
-    int non_rom;
     int repaired_images;
     bool changed;
 } FavouritesResult;
@@ -223,63 +225,54 @@ static const char *favourites_get_system_label(
     return NULL;
 }
 
-static bool favourites_strip_one_system_prefix(
-    char *label)
+static void favourites_strip_system_prefix(
+    char *label,
+    const char *system)
 {
-    size_t label_count =
-        sizeof(favourites_system_labels) /
-        sizeof(favourites_system_labels[0]);
+    const char *system_label =
+        favourites_get_system_label(system);
 
-    for (size_t i = 0; i < label_count; i++) {
-        char prefix[STR_MAX];
+    if (system_label == NULL)
+        return;
 
-        int prefix_length =
-            snprintf(
-                prefix,
-                sizeof(prefix),
-                "[%s]",
-                favourites_system_labels[i].label);
+    char prefix[STR_MAX];
 
-        if (prefix_length <= 0 ||
-            (size_t)prefix_length >= sizeof(prefix)) {
-            continue;
-        }
+    int prefix_length =
+        snprintf(
+            prefix,
+            sizeof(prefix),
+            "[%s]",
+            system_label);
 
-        if (strncasecmp(
-                label,
-                prefix,
-                (size_t)prefix_length) != 0) {
-            continue;
-        }
-
-        size_t remove_length =
-            (size_t)prefix_length;
-
-        while (label[remove_length] != '\0' &&
-               isspace(
-                   (unsigned char)
-                       label[remove_length])) {
-            remove_length++;
-        }
-
-        size_t label_length = strlen(label);
-
-        memmove(
+    if (prefix_length <= 0 ||
+        (size_t)prefix_length >= sizeof(prefix) ||
+        strncasecmp(
             label,
-            label + remove_length,
-            label_length - remove_length + 1);
-
-        return true;
+            prefix,
+            (size_t)prefix_length) != 0 ||
+        label[prefix_length] == '\0' ||
+        !isspace(
+            (unsigned char)
+                label[prefix_length])) {
+        return;
     }
 
-    return false;
-}
+    size_t remove_length =
+        (size_t)prefix_length;
 
-static void favourites_strip_system_prefixes(
-    char *label)
-{
-    while (favourites_strip_one_system_prefix(label)) {
+    while (label[remove_length] != '\0' &&
+           isspace(
+               (unsigned char)
+                   label[remove_length])) {
+        remove_length++;
     }
+
+    size_t label_length = strlen(label);
+
+    memmove(
+        label,
+        label + remove_length,
+        label_length - remove_length + 1);
 }
 
 static bool favourites_update_system_prefix(
@@ -342,6 +335,181 @@ static bool favourites_update_system_prefix(
     return cJSON_SetValuestring(
                label_item,
                updated_label) != NULL;
+}
+
+static bool favourites_copy_file(
+    const char *source_path,
+    const char *destination_path)
+{
+    FILE *source =
+        fopen(source_path, "rb");
+
+    if (source == NULL)
+        return false;
+
+    FILE *destination =
+        fopen(destination_path, "wb");
+
+    if (destination == NULL) {
+        fclose(source);
+        return false;
+    }
+
+    char buffer[8192];
+    bool success = true;
+    size_t bytes_read;
+
+    while ((bytes_read =
+                fread(
+                    buffer,
+                    1,
+                    sizeof(buffer),
+                    source)) > 0) {
+        if (fwrite(
+                buffer,
+                1,
+                bytes_read,
+                destination) != bytes_read) {
+            success = false;
+            break;
+        }
+    }
+
+    if (ferror(source))
+        success = false;
+
+    if (success &&
+        fflush(destination) != 0) {
+        success = false;
+    }
+
+    if (success &&
+        fsync(fileno(destination)) != 0) {
+        success = false;
+    }
+
+    if (fclose(source) != 0)
+        success = false;
+
+    if (fclose(destination) != 0)
+        success = false;
+
+    if (!success)
+        remove(destination_path);
+
+    return success;
+}
+
+static bool favourites_copy_path(
+    char destination[PATH_MAX],
+    const char *source)
+{
+    size_t length = strlen(source);
+
+    if (length >= PATH_MAX)
+        return false;
+
+    memcpy(
+        destination,
+        source,
+        length + 1);
+
+    return true;
+}
+
+static void favourites_normalize_proxy_launch_path(
+    char launch_path[PATH_MAX])
+{
+    const char emu_prefix[] = "/mnt/SDCARD/Emu/";
+    size_t prefix_length = strlen(emu_prefix);
+
+    if (strncmp(
+            launch_path,
+            emu_prefix,
+            prefix_length) != 0) {
+        return;
+    }
+
+    char *relative_path =
+        strstr(
+            launch_path + prefix_length,
+            "/../../");
+
+    if (relative_path == NULL ||
+        relative_path == launch_path + prefix_length ||
+        strchr(
+            launch_path + prefix_length,
+            '/') != relative_path ||
+        !str_endsWith(relative_path, "/proxy.sh")) {
+        return;
+    }
+
+    strcpy(
+        relative_path,
+        "/launch.sh");
+}
+
+static bool favourites_get_entry_paths(
+    cJSON *json,
+    char launch_path[PATH_MAX],
+    char rompath[PATH_MAX])
+{
+    launch_path[0] = '\0';
+
+    cJSON *rompath_item =
+        cJSON_GetObjectItemCaseSensitive(
+            json,
+            "rompath");
+
+    if (!cJSON_IsString(rompath_item) ||
+        rompath_item->valuestring == NULL ||
+        rompath_item->valuestring[0] == '\0' ||
+        !favourites_copy_path(
+            rompath,
+            rompath_item->valuestring)) {
+        return false;
+    }
+
+    char *packed_rompath =
+        str_split(
+            rompath,
+            ":");
+
+    if (packed_rompath != NULL) {
+        if (rompath[0] == '\0' ||
+            packed_rompath[0] == '\0') {
+            return false;
+        }
+
+        strcpy(
+            launch_path,
+            rompath);
+
+        memmove(
+            rompath,
+            packed_rompath,
+            strlen(packed_rompath) + 1);
+    }
+    else {
+        cJSON *launch_item =
+            cJSON_GetObjectItemCaseSensitive(
+                json,
+                "launch");
+
+        if (cJSON_IsString(launch_item) &&
+            launch_item->valuestring != NULL &&
+            launch_item->valuestring[0] != '\0' &&
+            !favourites_copy_path(
+                launch_path,
+                launch_item->valuestring)) {
+            return false;
+        }
+    }
+
+    favourites_normalize_proxy_launch_path(
+        launch_path);
+
+    return true;
 }
 
 static bool favourites_read(
@@ -413,23 +581,32 @@ static bool favourites_read(
                 root,
                 "rompath");
 
-        if (rompath_item == NULL ||
-            (cJSON_IsString(rompath_item) &&
-             rompath_item->valuestring != NULL &&
-             rompath_item->valuestring[0] == '\0')) {
-            result->non_rom++;
-        }
-        else if (!cJSON_IsString(rompath_item) ||
-                 rompath_item->valuestring == NULL) {
+        if (rompath_item != NULL &&
+            (!cJSON_IsString(rompath_item) ||
+             rompath_item->valuestring == NULL)) {
             cJSON_Delete(root);
             result->malformed++;
             continue;
         }
-        else {
+
+        if (cJSON_IsString(rompath_item) &&
+            rompath_item->valuestring[0] != '\0') {
             entry.rom_backed = true;
+            char launch_path[PATH_MAX];
+            char parsed_rompath[PATH_MAX];
+
+            if (!favourites_get_entry_paths(
+                    root,
+                    launch_path,
+                    parsed_rompath)) {
+                cJSON_Delete(root);
+                result->malformed++;
+                continue;
+            }
+
             entry.resolved_rompath =
                 file_resolvePath(
-                    rompath_item->valuestring);
+                    parsed_rompath);
 
             if (entry.resolved_rompath == NULL) {
                 cJSON_Delete(root);
@@ -442,8 +619,9 @@ static bool favourites_read(
                 entry.resolved_rompath,
                 entry.system);
 
-            favourites_strip_system_prefixes(
-                entry.label);
+            favourites_strip_system_prefix(
+                entry.label,
+                entry.system);
         }
 
         if (!favourites_collection_add(
@@ -474,42 +652,122 @@ static bool favourites_repair_image_path(
     if (!entry->rom_backed)
         return false;
 
-    cJSON *rompath_item =
-        cJSON_GetObjectItemCaseSensitive(
-            entry->json,
-            "rompath");
+    char launch_path[PATH_MAX];
+    char rompath[PATH_MAX];
 
-    if (!cJSON_IsString(rompath_item) ||
-        rompath_item->valuestring == NULL) {
+    if (!favourites_get_entry_paths(
+            entry->json,
+            launch_path,
+            rompath) ||
+        launch_path[0] == '\0') {
         return false;
     }
 
-    const char *rompath = rompath_item->valuestring;
-    const char *filename = strrchr(rompath, '/');
+    char *launcher_directory =
+        file_dirname(launch_path);
+
+    if (launcher_directory == NULL)
+        return false;
+
+    char config_path[PATH_MAX];
+
+    int written = snprintf(
+        config_path,
+        sizeof(config_path),
+        "%s/config.json",
+        launcher_directory);
+
+    if (written < 0 ||
+        written >= (int)sizeof(config_path) ||
+        !exists(config_path)) {
+        free(launcher_directory);
+        return false;
+    }
+
+    cJSON *config =
+        json_load(config_path);
+
+    if (config == NULL) {
+        free(launcher_directory);
+        return false;
+    }
+
+    cJSON *configured_image_item =
+        cJSON_GetObjectItemCaseSensitive(
+            config,
+            "imgpath");
+
+    if (!cJSON_IsString(configured_image_item) ||
+        configured_image_item->valuestring == NULL ||
+        configured_image_item->valuestring[0] == '\0') {
+        cJSON_Delete(config);
+        free(launcher_directory);
+        return false;
+    }
+
+    const char *configured_image_path =
+        configured_image_item->valuestring;
+
+    char image_directory[PATH_MAX];
+
+    if (configured_image_path[0] == '/') {
+        written = snprintf(
+            image_directory,
+            sizeof(image_directory),
+            "%s",
+            configured_image_path);
+    }
+    else {
+        written = snprintf(
+            image_directory,
+            sizeof(image_directory),
+            "%s/%s",
+            launcher_directory,
+            configured_image_path);
+    }
+
+    cJSON_Delete(config);
+    free(launcher_directory);
+
+    if (written < 0 ||
+        written >= (int)sizeof(image_directory)) {
+        return false;
+    }
+
+    const char *filename =
+        strrchr(rompath, '/');
 
     filename =
         filename == NULL
             ? rompath
             : filename + 1;
 
-    const char *extension = strrchr(filename, '.');
+    if (filename[0] == '\0')
+        return false;
 
-    size_t directory_length =
-        filename - rompath;
+    const char *extension =
+        strrchr(filename, '.');
 
     size_t stem_length =
         extension == NULL
             ? strlen(filename)
             : (size_t)(extension - filename);
 
+    const char *separator =
+        str_endsWith(
+            image_directory,
+            "/")
+            ? ""
+            : "/";
+
     char image_path[PATH_MAX];
 
-    int written = snprintf(
+    written = snprintf(
         image_path,
         sizeof(image_path),
-        "%.*sImgs/%.*s.png",
-        (int)directory_length,
-        rompath,
+        "%s%s%.*s.png",
+        image_directory,
+        separator,
         (int)stem_length,
         filename);
 
@@ -1016,9 +1274,22 @@ static bool favourites_write(
         return true;
     }
 
-    file_copy(
-        FAVORITES_PATH,
-        FAVOURITES_BACKUP_PATH);
+    if (!favourites_copy_file(
+            FAVORITES_PATH,
+            FAVOURITES_BACKUP_TEMP_PATH)) {
+        remove(FAVOURITES_TEMP_PATH);
+        return false;
+    }
+
+    if (rename(
+            FAVOURITES_BACKUP_TEMP_PATH,
+            FAVOURITES_BACKUP_PATH) != 0) {
+        remove(FAVOURITES_BACKUP_TEMP_PATH);
+        remove(FAVOURITES_TEMP_PATH);
+        return false;
+    }
+
+    sync();
 
     if (rename(
             FAVOURITES_TEMP_PATH,
@@ -1170,43 +1441,9 @@ static void action_favouritesManagerRestoreBackup(void *pointer)
         return;
     }
 
-    char *backup_contents =
-        file_read(FAVOURITES_BACKUP_PATH);
-
-    if (backup_contents == NULL) {
-        __showInfoDialog(
-            "Restore last backup",
-            "Could not read the favorites backup.");
-        return;
-    }
-
-    FILE *file = fopen(FAVOURITES_TEMP_PATH, "w");
-
-    if (file == NULL) {
-        free(backup_contents);
-        __showInfoDialog(
-            "Restore last backup",
-            "Could not prepare the restored file.");
-        return;
-    }
-
-    size_t content_length = strlen(backup_contents);
-
-    bool success =
-        fwrite(
-            backup_contents,
-            1,
-            content_length,
-            file) == content_length &&
-        fflush(file) == 0 &&
-        fsync(fileno(file)) == 0;
-
-    free(backup_contents);
-
-    if (fclose(file) != 0)
-        success = false;
-
-    if (!success ||
+    if (!favourites_copy_file(
+            FAVOURITES_BACKUP_PATH,
+            FAVOURITES_TEMP_PATH) ||
         rename(
             FAVOURITES_TEMP_PATH,
             FAVORITES_PATH) != 0) {

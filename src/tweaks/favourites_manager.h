@@ -29,10 +29,6 @@ typedef enum favourites_sort_mode_e {
     FAVOURITES_SORT_PRIORITY_NAMES = 2,
 } FavouritesSortMode;
 
-typedef enum favourites_inner_sort_e {
-    FAVOURITES_INNER_SORT_ALPHABETICAL = 0,
-} FavouritesInnerSort;
-
 typedef enum favourites_system_order_e {
     FAVOURITES_SYSTEM_ORDER_KEEP_CURRENT = 0,
     FAVOURITES_SYSTEM_ORDER_ALPHABETICAL = 1,
@@ -80,7 +76,6 @@ static int favourites_custom_system_count = 0;
 
 typedef struct favourites_manager_settings_s {
     int sort_mode;
-    int inner_sort;
     int system_order;
     bool remove_duplicates;
     bool remove_missing;
@@ -96,7 +91,6 @@ static void favourites_manager_setDefaults(void)
 {
     favourites_manager_settings = (FavouritesManagerSettings){
         .sort_mode = FAVOURITES_SORT_ALPHABETICAL,
-        .inner_sort = FAVOURITES_INNER_SORT_ALPHABETICAL,
         .system_order = FAVOURITES_SYSTEM_ORDER_ALPHABETICAL,
         .remove_duplicates = true,
         .remove_missing = false,
@@ -104,6 +98,8 @@ static void favourites_manager_setDefaults(void)
         .run_on_startup = false,
         .show_system_prefixes = false,
     };
+
+    favourites_custom_system_count = 0;
 
     favourites_priority_name_count =
         FAVOURITES_PRIORITY_NAME_COUNT;
@@ -131,8 +127,6 @@ static bool favourites_manager_saveSettings(void)
 
     cJSON_AddNumberToObject(
         root, "sort_mode", favourites_manager_settings.sort_mode);
-    cJSON_AddNumberToObject(
-        root, "inner_sort", favourites_manager_settings.inner_sort);
     cJSON_AddNumberToObject(
         root, "system_order_mode", favourites_manager_settings.system_order);
     cJSON_AddBoolToObject(
@@ -262,9 +256,6 @@ static void favourites_manager_loadSettings(void)
     json_getInt(
         root, "sort_mode",
         &favourites_manager_settings.sort_mode);
-    json_getInt(
-        root, "inner_sort",
-        &favourites_manager_settings.inner_sort);
     json_getBool(
         root, "show_system_prefixes",
         &favourites_manager_settings.show_system_prefixes);
@@ -405,9 +396,6 @@ static void favourites_manager_loadSettings(void)
         favourites_manager_settings.sort_mode =
             FAVOURITES_SORT_ALPHABETICAL;
     }
-
-    favourites_manager_settings.inner_sort =
-        FAVOURITES_INNER_SORT_ALPHABETICAL;
 
     if (favourites_manager_settings.system_order <
             FAVOURITES_SYSTEM_ORDER_KEEP_CURRENT ||
