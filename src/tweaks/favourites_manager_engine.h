@@ -1302,30 +1302,6 @@ static bool favourites_write(
     return true;
 }
 
-static bool favourites_preview(
-    FavouritesResult *result)
-{
-    FavouritesCollection collection;
-
-    if (!favourites_read(
-            &collection,
-            result)) {
-        return false;
-    }
-
-    if (result->malformed > 0) {
-        favourites_collection_free(&collection);
-        return true;
-    }
-
-    favourites_apply_rules(
-        &collection,
-        result);
-
-    favourites_collection_free(&collection);
-    return true;
-}
-
 static bool favourites_apply(
     FavouritesResult *result)
 {
@@ -1370,10 +1346,8 @@ static int favourites_manager_processStartup(void)
     return result.malformed > 0 ? 1 : 0;
 }
 
-static void favourites_show_result(
-    const char *title,
-    const FavouritesResult *result,
-    bool applied)
+static void favourites_show_apply_result(
+    const FavouritesResult *result)
 {
     char message[STR_MAX];
 
@@ -1385,7 +1359,9 @@ static void favourites_show_result(
             "No changes were written.",
             result->malformed);
 
-        __showInfoDialog(title, message);
+        __showInfoDialog(
+            "Favorites not updated",
+            message);
         return;
     }
 
@@ -1395,39 +1371,21 @@ static void favourites_show_result(
         "Entries: %d -> %d\n"
         "Duplicates removed: %d\n"
         "Missing removed: %d\n"
-        "Image paths repaired: %d\n"
-        "%s",
+        "Image paths repaired: %d%s",
         result->entries,
         result->kept,
         result->duplicates,
         result->missing,
         result->repaired_images,
-        applied
-            ? (result->changed
-                   ? "Favorites updated."
-                   : "Already up to date.")
-            : "Preview only.");
+        result->changed
+            ? ""
+            : "\nNo changes were needed.");
 
-    __showInfoDialog(title, message);
-}
-
-static void action_favouritesManagerPreview(void *pointer)
-{
-    (void)pointer;
-
-    FavouritesResult result;
-
-    if (!favourites_preview(&result)) {
-        __showInfoDialog(
-            "Preview changes",
-            "Could not process favourite.json.");
-        return;
-    }
-
-    favourites_show_result(
-        "Preview changes",
-        &result,
-        false);
+    __showInfoDialog(
+        result->changed
+            ? "Favorites updated"
+            : "Favorites unchanged",
+        message);
 }
 
 static void action_favouritesManagerRestoreBackup(void *pointer)
@@ -1470,15 +1428,12 @@ static void action_favouritesManagerApply(void *pointer)
 
     if (!favourites_apply(&result)) {
         __showInfoDialog(
-            "Apply changes",
+            "Favorites not updated",
             "Could not update favourite.json.");
         return;
     }
 
-    favourites_show_result(
-        "Apply changes",
-        &result,
-        true);
+    favourites_show_apply_result(&result);
 }
 
 #endif // TWEAKS_FAVOURITES_MANAGER_ENGINE_H__

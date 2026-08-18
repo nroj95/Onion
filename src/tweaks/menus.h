@@ -950,7 +950,7 @@ void menu_favouritesManager(void *_)
 
     if (!_menu_favourites_manager._created) {
         _menu_favourites_manager =
-            list_createWithTitle(5, LIST_SMALL, "Favorites manager");
+            list_createWithTitle(4, LIST_SMALL, "Favorites manager");
 
         list_addItemWithInfoNote(
             &_menu_favourites_manager,
@@ -976,14 +976,6 @@ void menu_favouritesManager(void *_)
                 .action = action_favouritesManagerRunOnStartup},
             "Automatically apply the configured rules\n"
             "during Onion startup.");
-
-        list_addItemWithInfoNote(
-            &_menu_favourites_manager,
-            (ListItem){
-                .label = "Preview changes",
-                .action = action_favouritesManagerPreview},
-            "Show what the configured rules would\n"
-            "change without writing the file.");
 
         list_addItemWithInfoNote(
             &_menu_favourites_manager,
