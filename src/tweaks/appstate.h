@@ -17,6 +17,8 @@ bool isMenu(List *target)
 
 static List _menu_network;
 static List _menu_wifi;
+static List _menu_wifi_saved_networks;
+static List _menu_wifi_network_actions;
 static List _menu_telnet;
 static List _menu_ftp;
 static List _menu_wps;
@@ -29,6 +31,8 @@ void menu_network_free_all(void)
 {
     list_free(&_menu_network);
     list_free(&_menu_wifi);
+    list_free(&_menu_wifi_saved_networks);
+    list_free(&_menu_wifi_network_actions);
     list_free(&_menu_telnet);
     list_free(&_menu_ftp);
     list_free(&_menu_wps);

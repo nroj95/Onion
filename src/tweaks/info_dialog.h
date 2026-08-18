@@ -34,6 +34,71 @@ void __showInfoDialog(const char *title, const char *message)
     all_changed = true;
 }
 
+bool showConfirmDialog(const char *title, const char *message)
+{
+    bool confirmed = false;
+    bool dialog_closed = false;
+    SDLKey changed_key = SDLK_UNKNOWN;
+
+    SDL_Surface *background =
+        SDL_CreateRGBSurface(
+            SDL_SWSURFACE,
+            screen->w,
+            screen->h,
+            32,
+            0,
+            0,
+            0,
+            0);
+
+    if (background == NULL)
+        return false;
+
+    SDL_BlitSurface(screen, NULL, background, NULL);
+
+    keys_enabled = false;
+
+    theme_renderDialog(screen, title, message, true);
+    SDL_BlitSurface(screen, NULL, video, NULL);
+    SDL_Flip(video);
+
+    while (!dialog_closed) {
+        if (updateKeystate(
+                keystate,
+                &dialog_closed,
+                true,
+                &changed_key)) {
+            if (
+                changed_key == SW_BTN_A &&
+                keystate[SW_BTN_A] == PRESSED) {
+                confirmed = true;
+                dialog_closed = true;
+            }
+            else if (
+                changed_key == SW_BTN_B &&
+                keystate[SW_BTN_B] == PRESSED) {
+                dialog_closed = true;
+            }
+        }
+
+        SDL_Delay(8);
+    }
+
+    if (
+        changed_key == SW_BTN_A ||
+        changed_key == SW_BTN_B)
+        sound_change();
+
+    SDL_BlitSurface(background, NULL, screen, NULL);
+    SDL_FreeSurface(background);
+
+    keys_enabled = true;
+    all_changed = true;
+    list_changed = true;
+
+    return confirmed;
+}
+
 void showInfoDialog(List *list)
 {
     ListItem *item = list_currentItem(list);
