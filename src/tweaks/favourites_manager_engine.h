@@ -1302,6 +1302,30 @@ static bool favourites_write(
     return true;
 }
 
+static bool favourites_preview(
+    FavouritesResult *result)
+{
+    FavouritesCollection collection;
+
+    if (!favourites_read(
+            &collection,
+            result)) {
+        return false;
+    }
+
+    if (result->malformed > 0) {
+        favourites_collection_free(&collection);
+        return true;
+    }
+
+    favourites_apply_rules(
+        &collection,
+        result);
+
+    favourites_collection_free(&collection);
+    return true;
+}
+
 static bool favourites_apply(
     FavouritesResult *result)
 {
@@ -1346,46 +1370,133 @@ static int favourites_manager_processStartup(void)
     return result.malformed > 0 ? 1 : 0;
 }
 
-static void favourites_show_apply_result(
+static const char *favourites_sort_mode_label(void)
+{
+    switch (favourites_manager_settings.sort_mode) {
+    case FAVOURITES_SORT_ALPHABETICAL:
+        return "Alphabetical";
+    case FAVOURITES_SORT_BY_SYSTEM:
+        return "By system";
+    case FAVOURITES_SORT_PRIORITY_NAMES:
+        return "Priority names";
+    default:
+        return "Unknown";
+    }
+}
+
+static const char *favourites_system_order_label(void)
+{
+    switch (favourites_manager_settings.system_order) {
+    case FAVOURITES_SYSTEM_ORDER_KEEP_CURRENT:
+        return "keep current";
+    case FAVOURITES_SYSTEM_ORDER_ALPHABETICAL:
+        return "alphabetical";
+    case FAVOURITES_SYSTEM_ORDER_CUSTOM:
+        return "custom";
+    default:
+        return "unknown";
+    }
+}
+
+static bool favourites_confirm_apply(
     const FavouritesResult *result)
 {
+    char sort_description[48];
     char message[STR_MAX];
+    bool confirmed = false;
+    bool dialog_quit = false;
+    SDLKey changed_key = SDLK_UNKNOWN;
 
-    if (result->malformed > 0) {
+    if (favourites_manager_settings.sort_mode ==
+        FAVOURITES_SORT_BY_SYSTEM) {
         snprintf(
-            message,
-            sizeof(message),
-            "Malformed entries: %d\n"
-            "No changes were written.",
-            result->malformed);
-
-        __showInfoDialog(
-            "Favorites not updated",
-            message);
-        return;
+            sort_description,
+            sizeof(sort_description),
+            "By system (%s)",
+            favourites_system_order_label());
+    }
+    else {
+        snprintf(
+            sort_description,
+            sizeof(sort_description),
+            "%s",
+            favourites_sort_mode_label());
     }
 
     snprintf(
         message,
         sizeof(message),
+        "Sort: %s\n"
+        "Prefixes: %s\n"
         "Entries: %d -> %d\n"
-        "Duplicates removed: %d\n"
-        "Missing removed: %d\n"
-        "Image paths repaired: %d%s",
+        "Remove: %d duplicate%s, %d missing\n"
+        "Repair image paths: %d\n"
+        " \n"
+        "[A] Apply   [B] Cancel",
+        sort_description,
+        favourites_manager_settings.show_system_prefixes
+            ? "On"
+            : "Off",
         result->entries,
         result->kept,
         result->duplicates,
+        result->duplicates == 1 ? "" : "s",
         result->missing,
-        result->repaired_images,
-        result->changed
-            ? ""
-            : "\nNo changes were needed.");
+        result->repaired_images);
 
-    __showInfoDialog(
-        result->changed
-            ? "Favorites updated"
-            : "Favorites unchanged",
-        message);
+    keys_enabled = false;
+
+    theme_renderDialog(
+        screen,
+        "Apply changes?",
+        message,
+        false);
+    SDL_BlitSurface(screen, NULL, video, NULL);
+    SDL_Flip(video);
+
+    // Do not let the A press that opened this dialog confirm it.
+    while (!dialog_quit) {
+        updateKeystate(
+            keystate,
+            &dialog_quit,
+            true,
+            &changed_key);
+
+        if (keystate[SW_BTN_A] == RELEASED &&
+            keystate[SW_BTN_B] == RELEASED)
+            break;
+    }
+
+    dialog_quit = false;
+
+    while (!dialog_quit) {
+        if (!updateKeystate(
+                keystate,
+                &dialog_quit,
+                true,
+                &changed_key)) {
+            continue;
+        }
+
+        if (changed_key == SW_BTN_A &&
+            keystate[SW_BTN_A] == PRESSED) {
+            confirmed = true;
+            break;
+        }
+
+        if (changed_key == SW_BTN_B &&
+            keystate[SW_BTN_B] == PRESSED) {
+            break;
+        }
+    }
+
+    if (changed_key != SDLK_UNKNOWN)
+        sound_change();
+
+    keys_enabled = true;
+    all_changed = true;
+
+    return confirmed;
 }
 
 static void action_favouritesManagerRestoreBackup(void *pointer)
@@ -1424,6 +1535,34 @@ static void action_favouritesManagerApply(void *pointer)
 {
     (void)pointer;
 
+    FavouritesResult preview_result;
+
+    if (!favourites_preview(&preview_result)) {
+        __showInfoDialog(
+            "Favorites not updated",
+            "Could not process favourite.json.");
+        return;
+    }
+
+    if (preview_result.malformed > 0) {
+        char message[STR_MAX];
+
+        snprintf(
+            message,
+            sizeof(message),
+            "Malformed entries: %d\n"
+            "No changes can be applied.",
+            preview_result.malformed);
+
+        __showInfoDialog(
+            "Favorites not updated",
+            message);
+        return;
+    }
+
+    if (!favourites_confirm_apply(&preview_result))
+        return;
+
     FavouritesResult result;
 
     if (!favourites_apply(&result)) {
@@ -1433,7 +1572,13 @@ static void action_favouritesManagerApply(void *pointer)
         return;
     }
 
-    favourites_show_apply_result(&result);
+    __showInfoDialog(
+        result.changed
+            ? "Favorites updated"
+            : "Favorites unchanged",
+        result.changed
+            ? "Changes applied successfully."
+            : "No changes were needed.");
 }
 
 #endif // TWEAKS_FAVOURITES_MANAGER_ENGINE_H__
