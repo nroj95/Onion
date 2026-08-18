@@ -70,7 +70,7 @@ Stop_hotspot_Server() {
 
 udhcpc_control() {
 	if pgrep udhcpc >/dev/null; then
-		killall -9 udhcpc
+		pkill -9 udhcpc
 	fi
 	$log_func "Old DHCP proc killed."
 	sleep 0.5

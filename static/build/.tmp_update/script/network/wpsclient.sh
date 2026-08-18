@@ -54,10 +54,15 @@ main() {
             current_time=$(date +%s)
             elapsed_time=$((current_time - start_time))
 
-            if [ $elapsed_time -gt 30 ]; then
+            if [ "$elapsed_time" -ge 30 ]; then
                 if [ -z "$IP" ]; then
+                    log "WPS: Timed out, restoring previous networks"
+                    $WPACLI wps_cancel > /dev/null 2>&1
+                    $WPACLI enable_network all > /dev/null 2>&1
+                    $WPACLI reconfigure > /dev/null 2>&1
+                    conn_cleanup
                     wpsfail
-                    log "WPS: Failed to connect.."
+                    log "WPS: Failed to connect"
                     sleep 5
                     exit
                 else
@@ -82,9 +87,7 @@ start_udhcpc() {
 }
 
 kill_udhcpc() {
-    if pgrep udhcpc > /dev/null; then
-        killall -9 udhcpc
-    fi
+    pkill -9 udhcpc > /dev/null 2>&1
 }
 
 conn_cleanup() {
