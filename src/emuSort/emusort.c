@@ -8,14 +8,18 @@
 #include "utils/log.h"
 #include "utils/sdl_init.h"
 #include "utils/timer.h"
-#include <../playActivity/playActivityDB.h>
+#include "../playActivity/playActivityDB.h"
 #include <SDL/SDL.h>
 #include <SDL/SDL_image.h>
 #include <SDL/SDL_ttf.h>
+#include <ctype.h>
+#include <dirent.h>
+#include <limits.h>
 #include <signal.h>
 #include <sqlite3/sqlite3.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -29,18 +33,17 @@
 #define HIDE_SPLASH_FLAG "/mnt/SDCARD/Saves/CurrentProfile/config/.emusortHideSplash"
 #define EMU_DIR "/mnt/SDCARD/Emu"
 #define MAX_EMU_COUNT 200
-#define MAX_LABEL_LEN 100
+#define MAX_PADDED_LABEL_LEN (STR_MAX + 2 * (MAX_EMU_COUNT - 1))
 #define IMG_MAX_WIDTH 80
 #define IMG_MAX_HEIGHT 80
 #define MIN(X, Y) (((X) < (Y)) ? (X) : (Y))
-#define EXIT_CANCEL 42
 
-static bool quit = false, cancel = false;
+static bool quit = false;
 
 typedef struct {
-    char label[MAX_LABEL_LEN];
-    char padded_label[MAX_LABEL_LEN];
-    char path[STR_MAX];
+    char label[STR_MAX];
+    char padded_label[MAX_PADDED_LABEL_LEN];
+    char path[PATH_MAX];
     char rompath[STR_MAX];
     int playtime;
     SDL_Surface *icon;
@@ -139,6 +142,27 @@ void showHelp(AppState *st)
     st->header_changed = st->list_changed = true;
 }
 
+void showNoEmulators(AppState *st)
+{
+    theme_renderDialog(
+        screen,
+        "Emulator ordering",
+        "No systems found.\n"
+        " \n"
+        "[A/B] Back",
+        false);
+    blitFlip();
+
+    while (!quit) {
+        if (!updateKeystate(st->keystate, &quit, true, NULL))
+            continue;
+
+        if (st->keystate[SW_BTN_A] == PRESSED ||
+            st->keystate[SW_BTN_B] == PRESSED)
+            break;
+    }
+}
+
 void showSplashScreen(AppState *st)
 {
     theme_renderDialog(
@@ -207,7 +231,15 @@ static int compareEmuLabel(const void *a, const void *b)
 }
 static int compareEmuPlaytime(const void *a, const void *b)
 {
-    return ((EmuInfo *)b)->playtime - ((EmuInfo *)a)->playtime;
+    const EmuInfo *emu_a = a;
+    const EmuInfo *emu_b = b;
+
+    if (emu_a->playtime < emu_b->playtime)
+        return 1;
+    if (emu_a->playtime > emu_b->playtime)
+        return -1;
+
+    return strcmp(emu_a->label, emu_b->label);
 }
 
 //
@@ -329,7 +361,7 @@ static bool writeLabelAtomic(const char *config_path, const char *label)
         return false;
     }
 
-    char temporary_path[STR_MAX + 8];
+    char temporary_path[PATH_MAX];
     int path_length = snprintf(
         temporary_path,
         sizeof(temporary_path),
@@ -502,7 +534,7 @@ void handleKeys(AppState *st)
     if (updateKeystate(st->keystate, &quit, true, NULL)) {
 
         if (st->keystate[SW_BTN_B] == PRESSED) // quit
-            cancel = quit = true;
+            quit = true;
         else if (st->keystate[SW_BTN_A] == PRESSED) // save & quit
             saveItems(st, false);
         else if (st->keystate[SW_BTN_DOWN] >= PRESSED) // scroll down
@@ -538,9 +570,9 @@ void trimWhitespace(char *str)
     size_t start = 0;
     size_t end = strlen(str);
 
-    while (start < end && isspace(str[start]))
+    while (start < end && isspace((unsigned char)str[start]))
         start++;
-    while (end > start && isspace(str[end - 1]))
+    while (end > start && isspace((unsigned char)str[end - 1]))
         end--;
 
     memmove(str, str + start, end - start);
@@ -578,13 +610,13 @@ const char *getFilename(const char *path)
 //
 void loadEmuIcons(AppState *st, const char *image_path)
 {
-    char themed_icon_path[STR_MAX];
+    char themed_icon_path[PATH_MAX];
     SDL_Surface *img = NULL;
     // try to load the themed icon, if it doesn't exist, use the default one
     if (!(image_path[0] == '/')) {
         // not an absolute path, construct the path from the config.json base dir
 
-        char basedir[STR_MAX];
+        char basedir[PATH_MAX];
         strcpy(basedir, st->emus[st->emu_count].path);
         char *dir = strrchr(basedir, '/');
         if (dir != NULL) {
@@ -623,7 +655,14 @@ void loadEmuIcons(AppState *st, const char *image_path)
     // load the "selected" icon if available
     snprintf(themed_icon_path, sizeof(themed_icon_path), "%sicons/sel/%s", st->theme_path, getFilename(image_path));
     if (is_file(themed_icon_path)) {
-        img = IMG_Load(is_file(themed_icon_path) ? themed_icon_path : image_path);
+        img = IMG_Load(themed_icon_path);
+        if (img == NULL) {
+            fprintf(stderr, "Error loading selected icon: %s\n", themed_icon_path);
+            fprintf(stderr, "SDL Error: %s\n", IMG_GetError());
+            st->emus[st->emu_count].icon_sel = st->emus[st->emu_count].icon;
+            return;
+        }
+
         sw = (double)IMG_MAX_WIDTH / img->w;
         sh = (double)IMG_MAX_HEIGHT / img->h;
         scale = MIN(sw, sh);
@@ -652,19 +691,34 @@ void processConfig(const char *configPath, AppState *st)
         return;
     }
 
-    fseek(file, 0, SEEK_END);
-    long file_size = ftell(file);
-    fseek(file, 0, SEEK_SET);
+    if (fseek(file, 0, SEEK_END) != 0) {
+        fclose(file);
+        fprintf(stderr, "Error seeking file: %s\n", configPath);
+        return;
+    }
 
-    char *buffer = (char *)malloc(file_size + 1);
+    long file_size = ftell(file);
+    if (file_size < 0 || fseek(file, 0, SEEK_SET) != 0) {
+        fclose(file);
+        fprintf(stderr, "Error reading file size: %s\n", configPath);
+        return;
+    }
+
+    char *buffer = malloc((size_t)file_size + 1);
     if (!buffer) {
         fclose(file);
         fprintf(stderr, "Error allocating memory for file: %s\n", configPath);
         return;
     }
 
-    fread(buffer, 1, file_size, file);
+    size_t bytes_read = fread(buffer, 1, (size_t)file_size, file);
     fclose(file);
+
+    if (bytes_read != (size_t)file_size) {
+        free(buffer);
+        fprintf(stderr, "Error reading file: %s\n", configPath);
+        return;
+    }
 
     buffer[file_size] = '\0';
 
@@ -681,12 +735,20 @@ void processConfig(const char *configPath, AppState *st)
     if (labelObj && cJSON_IsString(labelObj) && strlen(labelObj->valuestring) > 0) {
 
         // store label with spaces
-        strncpy(st->emus[st->emu_count].padded_label, labelObj->valuestring, MAX_LABEL_LEN - 1);
-        st->emus[st->emu_count].padded_label[MAX_LABEL_LEN - 1] = '\0';
+        strncpy(
+            st->emus[st->emu_count].padded_label,
+            labelObj->valuestring,
+            sizeof(st->emus[st->emu_count].padded_label) - 1);
+        st->emus[st->emu_count].padded_label[
+            sizeof(st->emus[st->emu_count].padded_label) - 1] = '\0';
 
         // store label without spaces
-        strncpy(st->emus[st->emu_count].label, labelObj->valuestring, MAX_LABEL_LEN - 1);
-        st->emus[st->emu_count].label[MAX_LABEL_LEN - 1] = '\0';
+        strncpy(
+            st->emus[st->emu_count].label,
+            labelObj->valuestring,
+            sizeof(st->emus[st->emu_count].label) - 1);
+        st->emus[st->emu_count].label[
+            sizeof(st->emus[st->emu_count].label) - 1] = '\0';
         trimWhitespace(st->emus[st->emu_count].label);
 
         // get icon
@@ -731,12 +793,16 @@ void processDirectories(const char *base_dir, AppState *st)
     // iterate through the directory, skipping . and ..
     while ((entry = readdir(dir)) != NULL && st->emu_count < MAX_EMU_COUNT) {
         if (entry->d_type == DT_DIR && strcmp(entry->d_name, ".") != 0 && strcmp(entry->d_name, "..") != 0) {
-            char configPath[STR_MAX * 2];
+            char configPath[PATH_MAX];
 
             // store config path
             snprintf(configPath, sizeof(configPath), "%s/%s/config.json", base_dir, entry->d_name);
-            strncpy(st->emus[st->emu_count].path, configPath, STR_MAX - 1);
-            st->emus[st->emu_count].path[STR_MAX - 1] = '\0';
+            strncpy(
+                st->emus[st->emu_count].path,
+                configPath,
+                sizeof(st->emus[st->emu_count].path) - 1);
+            st->emus[st->emu_count].path[
+                sizeof(st->emus[st->emu_count].path) - 1] = '\0';
 
             processConfig(configPath, st);
         }
@@ -853,6 +919,10 @@ void getPlayTimes(AppState *st)
     play_activity_db_open();
 
     stmt = play_activity_db_prepare(sql);
+    if (stmt == NULL) {
+        play_activity_db_close();
+        return;
+    }
 
     while (sqlite3_step(stmt) == SQLITE_ROW) {
         const char *emulator = (const char *)sqlite3_column_text(stmt, 0);
@@ -869,21 +939,27 @@ void getPlayTimes(AppState *st)
 
 int main()
 {
-    static bool first = true;
+    bool first = true;
 
     START_TIMER(tm_loading);
     START_TIMER(tm_init);
     AppState *st = init();
     END_TIMER(tm_init);
 
-    if (!is_file(HIDE_SPLASH_FLAG))
-        showSplashScreen(st);
-
     // get all emulators from the Emu directory, sort alphabetically as they would appear in MainUI
     START_TIMER(tm_get_data);
     processDirectories(EMU_DIR, st);
     qsort(st->emus, st->emu_count, sizeof(st->emus[0]), compareEmuLabelPadded);
     END_TIMER(tm_get_data);
+
+    if (st->emu_count == 0) {
+        showNoEmulators(st);
+        freeResources(st);
+        return EXIT_SUCCESS;
+    }
+
+    if (!is_file(HIDE_SPLASH_FLAG))
+        showSplashScreen(st);
 
     // get playtime for each emulator
     START_TIMER(tm_get_playtime);
@@ -907,5 +983,5 @@ int main()
     SDL_Flip(video);
 
     freeResources(st);
-    return cancel ? EXIT_CANCEL : EXIT_SUCCESS;
+    return EXIT_SUCCESS;
 }
