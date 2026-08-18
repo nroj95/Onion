@@ -408,6 +408,26 @@ static bool writeLabelAtomic(const char *config_path, const char *label)
     return true;
 }
 
+static void waitForResultDismiss(AppState *st)
+{
+    while (!quit) {
+        updateKeystate(st->keystate, &quit, true, NULL);
+
+        if (st->keystate[SW_BTN_A] == RELEASED &&
+            st->keystate[SW_BTN_B] == RELEASED)
+            break;
+    }
+
+    while (!quit) {
+        if (!updateKeystate(st->keystate, &quit, true, NULL))
+            continue;
+
+        if (st->keystate[SW_BTN_A] == PRESSED ||
+            st->keystate[SW_BTN_B] == PRESSED)
+            break;
+    }
+}
+
 void saveItems(AppState *st, bool reset_ordering)
 {
     theme_renderDialog(screen, "Saving...", "Please wait", false);
@@ -434,7 +454,9 @@ void saveItems(AppState *st, bool reset_ordering)
             message,
             sizeof(message),
             "%d system%s could not be saved.\n"
-            "Check the error log and try again.",
+            "Check the error log and try again.\n"
+            " \n"
+            "[A/B] Continue",
             failed_count,
             failed_count == 1 ? "" : "s");
 
@@ -444,7 +466,8 @@ void saveItems(AppState *st, bool reset_ordering)
             message,
             false);
         blitFlip();
-        sleep(2);
+
+        waitForResultDismiss(st);
 
         st->all_changed = true;
         return;
@@ -452,13 +475,18 @@ void saveItems(AppState *st, bool reset_ordering)
 
     theme_renderDialog(
         screen,
-        reset_ordering ? "Ordering reset" : "Done!",
+        reset_ordering ? "Ordering reset" : "Ordering saved",
         reset_ordering
-            ? "Natural alphabetical order restored"
-            : "Systems have been reordered",
+            ? "Natural alphabetical order restored\n"
+              " \n"
+              "[A/B] Continue"
+            : "Systems have been reordered\n"
+              " \n"
+              "[A/B] Continue",
         false);
     blitFlip();
-    sleep(1);
+
+    waitForResultDismiss(st);
 
     quit = true;
 }
