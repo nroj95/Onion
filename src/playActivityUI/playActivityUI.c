@@ -150,6 +150,105 @@ static void renderButtonHint(
     );
 }
 
+static void renderComboButtonHint(
+    int x,
+    const char *label
+)
+{
+    const int center_y = 451;
+    const int left_center_x = x + 13;
+    const int right_center_x = x + 49;
+    const int radius = 13;
+
+    Uint32 button_color = SDL_MapRGB(
+        screen->format,
+        color_purple.r,
+        color_purple.g,
+        color_purple.b
+    );
+
+    fillCircle(
+        screen,
+        left_center_x,
+        center_y,
+        radius,
+        button_color
+    );
+
+    fillCircle(
+        screen,
+        right_center_x,
+        center_y,
+        radius,
+        button_color
+    );
+
+    int text_width = 0;
+    int text_height = 0;
+
+    TTF_SizeUTF8(
+        font18,
+        "L",
+        &text_width,
+        &text_height
+    );
+
+    renderText(
+        "L",
+        font18,
+        color_white,
+        &(SDL_Rect){
+            left_center_x - text_width / 2,
+            center_y - text_height / 2 - 1,
+            text_width,
+            text_height
+        }
+    );
+
+    TTF_SizeUTF8(
+        font18,
+        "R",
+        &text_width,
+        &text_height
+    );
+
+    renderText(
+        "R",
+        font18,
+        color_white,
+        &(SDL_Rect){
+            right_center_x - text_width / 2,
+            center_y - text_height / 2 - 1,
+            text_width,
+            text_height
+        }
+    );
+
+    renderText(
+        "+",
+        font18,
+        color_white,
+        &(SDL_Rect){
+            x + 28,
+            440,
+            18,
+            30
+        }
+    );
+
+    renderText(
+        label,
+        font30,
+        color_white,
+        &(SDL_Rect){
+            x + 70,
+            430,
+            150,
+            44
+        }
+    );
+}
+
 static void renderFooter(void)
 {
     SDL_Rect footer = {
@@ -178,9 +277,8 @@ static void renderFooter(void)
             : "RAW"
     );
 
-    renderButtonHint(
-        230,
-        "X",
+    renderComboButtonHint(
+        205,
         "REMOVE"
     );
 
@@ -664,11 +762,12 @@ static bool confirmRemoval(
     KeyState dialog_keystate[320] = {(KeyState)0};
 
     /*
-     * X opened this dialog. Treat it as held until its
-     * KEYUP event arrives so that repeats cannot leak
+     * L + R opened this dialog. Treat both as held until
+     * their KEYUP events arrive so repeats cannot leak
      * into either the dialog or the main input loop.
      */
-    dialog_keystate[SW_BTN_X] = PRESSED;
+    dialog_keystate[SW_BTN_L1] = PRESSED;
+    dialog_keystate[SW_BTN_R1] = PRESSED;
 
     while (!dialog_quit && !quit) {
         if (!updateKeystate(
@@ -681,8 +780,10 @@ static bool confirmRemoval(
         }
 
         if (!opener_released) {
-            if (dialog_keystate[SW_BTN_X] == RELEASED)
+            if (dialog_keystate[SW_BTN_L1] == RELEASED &&
+                dialog_keystate[SW_BTN_R1] == RELEASED) {
                 opener_released = true;
+            }
 
             continue;
         }
@@ -1049,7 +1150,10 @@ int main(int argc, char *argv[])
             changed = true;
         }
 
-        if (keystate[SW_BTN_X] == PRESSED &&
+        if (((keystate[SW_BTN_L1] == PRESSED &&
+              keystate[SW_BTN_R1] != RELEASED) ||
+             (keystate[SW_BTN_R1] == PRESSED &&
+              keystate[SW_BTN_L1] != RELEASED)) &&
             play_activities->count > 0) {
             bool confirmed = confirmRemoval(
                 current_page,
