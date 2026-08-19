@@ -766,6 +766,92 @@ void play_activity_identity_source_delete(
     sqlite3_finalize(statement);
 }
 
+sqlite3_stmt *play_activity_identity_prepare_candidates(
+    sqlite3 *database,
+    const char *system,
+    const RomContentIdentity *identity,
+    const char *excluded_file_path
+)
+{
+    if (database == NULL ||
+        system == NULL ||
+        system[0] == '\0' ||
+        identity == NULL ||
+        identity->type[0] == '\0' ||
+        identity->value[0] == '\0' ||
+        excluded_file_path == NULL) {
+        return NULL;
+    }
+
+    const char *sql =
+        "SELECT "
+        "    rom.id,"
+        "    rom.file_path,"
+        "    COALESCE(NULLIF(rom.name, ''), rom.file_path) "
+        "FROM rom_identity "
+        "JOIN rom ON rom.id = rom_identity.rom_id "
+        "WHERE rom_identity.system = ?1 "
+        "  AND rom_identity.identity_type = ?2 "
+        "  AND rom_identity.identity_value = ?3 "
+        "  AND rom_identity.content_size = ?4 "
+        "  AND rom.file_path <> ?5 "
+        "ORDER BY "
+        "    LOWER(COALESCE(NULLIF(rom.name, ''), rom.file_path)),"
+        "    rom.id;";
+
+    sqlite3_stmt *statement = NULL;
+
+    if (sqlite3_prepare_v2(
+            database,
+            sql,
+            -1,
+            &statement,
+            NULL
+        ) != SQLITE_OK) {
+        return NULL;
+    }
+
+    sqlite3_bind_text(
+        statement,
+        1,
+        system,
+        -1,
+        SQLITE_TRANSIENT
+    );
+
+    sqlite3_bind_text(
+        statement,
+        2,
+        identity->type,
+        -1,
+        SQLITE_TRANSIENT
+    );
+
+    sqlite3_bind_text(
+        statement,
+        3,
+        identity->value,
+        -1,
+        SQLITE_TRANSIENT
+    );
+
+    sqlite3_bind_int64(
+        statement,
+        4,
+        (sqlite3_int64)identity->content_size
+    );
+
+    sqlite3_bind_text(
+        statement,
+        5,
+        excluded_file_path,
+        -1,
+        SQLITE_TRANSIENT
+    );
+
+    return statement;
+}
+
 static bool file_stems_match(
     const char *first_path,
     const char *second_path

@@ -502,6 +502,49 @@ void test_identity_schema_storage(void)
         "duplicate identities remain separate and system scoped"
     );
 
+    check_condition(
+        sqlite3_exec(
+            database,
+            "INSERT INTO rom(id, name, file_path) VALUES"
+            "    (90, 'copy a', 'GB/copy-a.gb'),"
+            "    (91, 'copy b', 'GB/copy-b.gb'),"
+            "    (92, 'copy gbc', 'GBC/copy.gbc');",
+            NULL,
+            NULL,
+            NULL
+        ) == SQLITE_OK,
+        "create candidate rom fixtures"
+    );
+
+    sqlite3_stmt *candidate_statement =
+        play_activity_identity_prepare_candidates(
+            database,
+            "GB",
+            &first_collision_identity,
+            "GB/copy-a.gb"
+        );
+
+    bool candidate_matches =
+        candidate_statement != NULL &&
+        sqlite3_step(candidate_statement) == SQLITE_ROW &&
+        sqlite3_column_int(candidate_statement, 0) == 91 &&
+        strcmp(
+            (const char *)sqlite3_column_text(
+                candidate_statement,
+                1
+            ),
+            "GB/copy-b.gb"
+        ) == 0 &&
+        sqlite3_step(candidate_statement) == SQLITE_DONE;
+
+    if (candidate_statement != NULL)
+        sqlite3_finalize(candidate_statement);
+
+    check_condition(
+        candidate_matches,
+        "candidate query excludes current path and other systems"
+    );
+
     RomContentIdentity unchanged_identity;
 
     check_condition(

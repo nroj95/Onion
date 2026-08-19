@@ -66,6 +66,13 @@ void play_activity_identity_source_delete(
     int rom_id
 );
 
+sqlite3_stmt *play_activity_identity_prepare_candidates(
+    sqlite3 *database,
+    const char *system,
+    const RomContentIdentity *identity,
+    const char *excluded_file_path
+);
+
 bool play_activity_identity_merge_roms(
     sqlite3 *database,
     int survivor_rom_id,

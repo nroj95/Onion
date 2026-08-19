@@ -12,6 +12,8 @@ void printUsage()
 {
     printf("Usage: playActivity list             -> List all play activities\n"
            "       playActivity start [rom_path] -> Launch the counter for this rom\n"
+           "       playActivity candidates [rom_path]\n"
+           "                                      -> List matching transfer candidates\n"
            "       playActivity resume           -> Resume the last rom as a new play activity\n"
            "       playActivity stop [rom_path]  -> Stop the counter for this rom\n"
            "       playActivity stop_all         -> Stop the counter for all roms\n"
@@ -354,6 +356,85 @@ static int resolve_rom_for_start(const char *rom_path)
     return rom_id;
 }
 
+static bool print_transfer_candidates(const char *rom_path)
+{
+    if (rom_path == NULL || rom_path[0] == '\0')
+        return false;
+
+    RomIdentityContext context;
+    memset(&context, 0, sizeof(context));
+
+    if (!rom_identity_context_build(rom_path, &context))
+        return false;
+
+    /*
+     * path-only and unsupported content cannot safely participate in
+     * content-based transfer matching.
+     */
+    if (context.kind == ROM_IDENTITY_KIND_ARCADE ||
+        context.kind == ROM_IDENTITY_KIND_UNSUPPORTED) {
+        return true;
+    }
+
+    RomContentIdentity identity;
+    int64_t modified_time = 0;
+
+    if (!calculate_content_identity(
+            rom_path,
+            &identity,
+            &modified_time)) {
+        return false;
+    }
+
+    char current_file_path[PATH_MAX] = "";
+    __ensure_rel_path(current_file_path, rom_path);
+
+    play_activity_db_open();
+
+    if (play_activity_db == NULL)
+        return false;
+
+    sqlite3_stmt *statement =
+        play_activity_identity_prepare_candidates(
+            play_activity_db,
+            context.system,
+            &identity,
+            current_file_path
+        );
+
+    if (statement == NULL) {
+        play_activity_db_close();
+        return false;
+    }
+
+    int result;
+
+    while ((result = sqlite3_step(statement)) == SQLITE_ROW) {
+        int rom_id = sqlite3_column_int(statement, 0);
+
+        const unsigned char *stored_path =
+            sqlite3_column_text(statement, 1);
+
+        const unsigned char *display_name =
+            sqlite3_column_text(statement, 2);
+
+        if (stored_path == NULL || display_name == NULL)
+            continue;
+
+        printf(
+            "%d\t%s\t%s\n",
+            rom_id,
+            (const char *)stored_path,
+            (const char *)display_name
+        );
+    }
+
+    sqlite3_finalize(statement);
+    play_activity_db_close();
+
+    return result == SQLITE_DONE;
+}
+
 static void play_activity_start_with_identity(
     char *rom_file_path
 )
@@ -396,6 +477,17 @@ int main(int argc, char *argv[])
         if (strcmp(argv[i], "start") == 0) {
             if (i + 1 < argc) {
                 play_activity_start_with_identity(argv[++i]);
+            }
+            else {
+                printf("Error: Missing rom_path argument\n");
+                printUsage();
+                return EXIT_FAILURE;
+            }
+        }
+        else if (strcmp(argv[i], "candidates") == 0) {
+            if (i + 1 < argc) {
+                if (!print_transfer_candidates(argv[++i]))
+                    return EXIT_FAILURE;
             }
             else {
                 printf("Error: Missing rom_path argument\n");
