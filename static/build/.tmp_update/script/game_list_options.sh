@@ -54,6 +54,7 @@ menu_options=""
 menu_option_labels=""
 menu_option_args=""
 menu_option_info=""
+activity_transfer_candidates=""
 
 main() {
     
@@ -182,6 +183,15 @@ main() {
 
         if [ $add_reset_core -eq 1 ]; then
             add_menu_option reset_core "Restore default core" "Restores the default core\nfor this rom"
+        fi
+
+        activity_transfer_candidates=$(playActivity candidates "$rompath" 2> /dev/null)
+        activity_transfer_status=$?
+
+        if [ $activity_transfer_status -eq 0 ] && [ -n "$activity_transfer_candidates" ]; then
+            add_menu_option transfer_activity_data \
+                "Transfer activity data" \
+                "Transfer activity and game data from\na tracked copy of this same game"
         fi
 
         # Add "Migrate mGBA Save" option dynamically
@@ -621,6 +631,191 @@ transfer_mgba_save() {
 
         # Show info panel
         infoPanel --title "MIGRATION SUCCESSFUL" --message "mGBA save transferred to gpSP." --auto
+    fi
+}
+
+transfer_activity_data() {
+    log ":: transfer_activity_data"
+
+    if [ -z "$activity_transfer_candidates" ]; then
+        infoPanel \
+            --title "TRANSFER UNAVAILABLE" \
+            --message "No matching tracked game was found." \
+            --auto
+        return
+    fi
+
+    candidate_file=$(mktemp)
+
+    if [ -z "$candidate_file" ]; then
+        return
+    fi
+
+    printf '%s\n' "$activity_transfer_candidates" > "$candidate_file"
+
+    tab=$(printf '\t')
+
+    #
+    # prompt -i expects all item labels first, followed by all item info
+    # strings. Build both groups as shell positional parameters so candidate
+    # names and paths are passed literally rather than evaluated as commands.
+    #
+    set --
+    candidate_count=0
+
+    while IFS="$tab" read -r candidate_id candidate_path candidate_name; do
+        if [ -z "$candidate_id" ]; then
+            continue
+        fi
+
+        if [ -z "$candidate_name" ]; then
+            candidate_name=$(basename "$candidate_path")
+        fi
+
+        set -- "$@" "$candidate_name"
+        candidate_count=$((candidate_count + 1))
+    done < "$candidate_file"
+
+    if [ "$candidate_count" -eq 0 ]; then
+        rm -f "$candidate_file"
+        return
+    fi
+
+    while IFS="$tab" read -r candidate_id candidate_path candidate_name; do
+        if [ -z "$candidate_id" ]; then
+            continue
+        fi
+
+        set -- "$@" "$candidate_path"
+    done < "$candidate_file"
+
+    LD_PRELOAD=/mnt/SDCARD/miyoo/lib/libpadsp.so \
+        /mnt/SDCARD/.tmp_update/bin/prompt \
+        -t "TRANSFER FROM" \
+        -i \
+        "$@"
+
+    candidate_index=$?
+
+    if [ "$candidate_index" -ge "$candidate_count" ]; then
+        rm -f "$candidate_file"
+        return
+    fi
+
+    candidate_line=$(
+        sed -n "$((candidate_index + 1))p" "$candidate_file"
+    )
+
+    candidate_id=$(printf '%s\n' "$candidate_line" | cut -f1)
+    candidate_name=$(printf '%s\n' "$candidate_line" | cut -f3-)
+
+    rm -f "$candidate_file"
+
+    if [ -z "$candidate_id" ]; then
+        return
+    fi
+
+    if [ -z "$candidate_name" ]; then
+        candidate_name="selected game"
+    fi
+
+    if ! plan=$(playActivity transfer_plan "$candidate_id" "$rompath" 2> /dev/null) ||
+        [ -z "$plan" ]; then
+        infoPanel \
+            --title "TRANSFER UNAVAILABLE" \
+            --message "The selected game no longer matches." \
+            --auto
+        return
+    fi
+
+    plan_kind=$(printf '%s\n' "$plan" | cut -f1)
+    replace_existing=0
+    confirmation_result=1
+
+    case "$plan_kind" in
+        ready)
+            LD_PRELOAD=/mnt/SDCARD/miyoo/lib/libpadsp.so \
+                /mnt/SDCARD/.tmp_update/bin/prompt \
+                -t "Transfer activity?" \
+                -m "Transfer activity and any matching saves and states from:\n\
+$candidate_name\n\
+\n\
+Matching save and state files will be renamed for this game." \
+                "Yes, transfer" \
+                "No, cancel"
+
+            confirmation_result=$?
+            ;;
+
+        replace)
+            blocked=$(printf '%s\n' "$plan" | cut -f3)
+
+            LD_PRELOAD=/mnt/SDCARD/miyoo/lib/libpadsp.so \
+                /mnt/SDCARD/.tmp_update/bin/prompt \
+                -t "Replace game data?" \
+                -m "Transfer activity and matching saves and states from:\n\
+$candidate_name\n\
+\n\
+$blocked existing save/state file(s) will be replaced." \
+                "Yes, replace files" \
+                "No, cancel"
+
+            confirmation_result=$?
+            replace_existing=1
+            ;;
+
+        activity-only)
+            LD_PRELOAD=/mnt/SDCARD/miyoo/lib/libpadsp.so \
+                /mnt/SDCARD/.tmp_update/bin/prompt \
+                -t "Transfer activity?" \
+                -m "Transfer activity and history from:\n\
+$candidate_name\n\
+\n\
+The old core could not be identified, so saves and states will not be changed." \
+                "Yes, transfer activity" \
+                "No, cancel"
+
+            confirmation_result=$?
+            ;;
+
+        *)
+            infoPanel \
+                --title "TRANSFER UNAVAILABLE" \
+                --message "The transfer could not be validated." \
+                --auto
+            return
+            ;;
+    esac
+
+    if [ "$confirmation_result" -ne 0 ]; then
+        return
+    fi
+
+    transfer_result=1
+
+    if [ "$replace_existing" -eq 1 ]; then
+        playActivity transfer \
+            "$candidate_id" \
+            "$rompath" \
+            --replace
+    else
+        playActivity transfer \
+            "$candidate_id" \
+            "$rompath"
+    fi
+
+    transfer_result=$?
+
+    if [ "$transfer_result" -eq 0 ]; then
+        infoPanel \
+            --title "TRANSFER COMPLETE" \
+            --message "Activity data transferred successfully." \
+            --auto
+    else
+        infoPanel \
+            --title "TRANSFER FAILED" \
+            --message "No transfer was completed." \
+            --auto
     fi
 }
 
