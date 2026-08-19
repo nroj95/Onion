@@ -406,6 +406,64 @@ void test_identity_transfer_plan(void)
     );
 
     check_condition(
+        sqlite3_exec(
+            database,
+            "INSERT INTO rom("
+            "    id, name, file_path"
+            ") VALUES("
+            "    93,"
+            "    'transferred name',"
+            "    'GB/transferred-name.gb'"
+            ");",
+            NULL,
+            NULL,
+            NULL
+        ) == SQLITE_OK &&
+        play_activity_identity_store(
+            database,
+            93,
+            "GB",
+            &identity,
+            123456789
+        ) &&
+        play_activity_identity_record_path_change(
+            database,
+            93,
+            "GB/old-name.gb",
+            "GB/transferred-name.gb"
+        ),
+        "create transferred-but-unlaunched planner source"
+    );
+
+    bool history_fallback_ready =
+        play_activity_transfer_plan(
+            database,
+            93,
+            "GB",
+            &identity,
+            "GB/fallback-target.gb",
+            roms_root,
+            history_path,
+            saves_root,
+            states_root,
+            &plan
+        );
+
+    check_condition(
+        history_fallback_ready &&
+        plan.kind == PLAY_ACTIVITY_TRANSFER_PLAN_READY &&
+        strcmp(
+            plan.source_core_name,
+            "Gambatte"
+        ) == 0 &&
+        strcmp(
+            plan.source_file_path,
+            "GB/transferred-name.gb"
+        ) == 0,
+        "transfer planner recovers core from explicit path history"
+    );
+
+    check_condition(
         write_fixture(
             new_save_path,
             "existing destination save"

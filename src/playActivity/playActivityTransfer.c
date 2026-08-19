@@ -80,6 +80,128 @@ static bool find_transfer_candidate_path(
     return found;
 }
 
+static bool find_transfer_core_path(
+    sqlite3 *database,
+    int source_rom_id,
+    const char *source_file_path,
+    const char *roms_root,
+    const char *history_path,
+    char *core_path_out,
+    size_t core_path_out_size,
+    bool *lookup_ok_out
+)
+{
+    if (core_path_out != NULL &&
+        core_path_out_size > 0) {
+        core_path_out[0] = '\0';
+    }
+
+    if (lookup_ok_out != NULL)
+        *lookup_ok_out = false;
+
+    if (database == NULL ||
+        source_rom_id < 0 ||
+        source_file_path == NULL ||
+        roms_root == NULL ||
+        history_path == NULL ||
+        core_path_out == NULL ||
+        core_path_out_size == 0 ||
+        lookup_ok_out == NULL) {
+        return false;
+    }
+
+    char absolute_path[PATH_MAX] = "";
+
+    if (play_activity_transfer_stored_path_to_absolute(
+            roms_root,
+            source_file_path,
+            absolute_path,
+            sizeof(absolute_path)) &&
+        play_activity_history_find_core_path(
+            history_path,
+            absolute_path,
+            core_path_out,
+            core_path_out_size)) {
+        *lookup_ok_out = true;
+        return true;
+    }
+
+    /*
+     * A rom that was explicitly transferred but never launched has no
+     * RetroArch history entry under its current path. Only explicit path
+     * transitions belonging to this rom_id are accepted as fallback evidence.
+     */
+    const char *sql =
+        "SELECT old_file_path "
+        "FROM rom_path_history "
+        "WHERE rom_id = ?1 "
+        "ORDER BY changed_at DESC, id DESC;";
+
+    sqlite3_stmt *statement = NULL;
+
+    if (sqlite3_prepare_v2(
+            database,
+            sql,
+            -1,
+            &statement,
+            NULL) != SQLITE_OK) {
+        return false;
+    }
+
+    sqlite3_bind_int(statement, 1, source_rom_id);
+
+    bool found = false;
+    int result;
+
+    while ((result = sqlite3_step(statement)) == SQLITE_ROW) {
+        const unsigned char *historical_file_path =
+            sqlite3_column_text(statement, 0);
+
+        if (historical_file_path == NULL)
+            continue;
+
+        const char *stored_historical_path =
+            (const char *)historical_file_path;
+
+        if (strcmp(
+                stored_historical_path,
+                source_file_path
+            ) == 0) {
+            continue;
+        }
+
+        absolute_path[0] = '\0';
+
+        if (!play_activity_transfer_stored_path_to_absolute(
+                roms_root,
+                stored_historical_path,
+                absolute_path,
+                sizeof(absolute_path))) {
+            continue;
+        }
+
+        if (play_activity_history_find_core_path(
+                history_path,
+                absolute_path,
+                core_path_out,
+                core_path_out_size)) {
+            found = true;
+            break;
+        }
+    }
+
+    bool query_ok =
+        found || result == SQLITE_DONE;
+
+    sqlite3_finalize(statement);
+
+    if (!query_ok)
+        return false;
+
+    *lookup_ok_out = true;
+    return found;
+}
+
 bool play_activity_transfer_stored_path_to_absolute(
     const char *roms_root,
     const char *stored_file_path,
@@ -225,25 +347,25 @@ bool play_activity_transfer_plan(
         return false;
     }
 
-    char source_absolute_path[PATH_MAX] = "";
-
-    if (!play_activity_transfer_stored_path_to_absolute(
-            roms_root,
-            source_file_path,
-            source_absolute_path,
-            sizeof(source_absolute_path))) {
-        plan_out->kind =
-            PLAY_ACTIVITY_TRANSFER_PLAN_ACTIVITY_ONLY;
-        return true;
-    }
-
     char source_core_path[PATH_MAX] = "";
+    bool core_lookup_ok = false;
 
-    if (!play_activity_history_find_core_path(
+    bool source_core_found =
+        find_transfer_core_path(
+            database,
+            source_rom_id,
+            source_file_path,
+            roms_root,
             history_path,
-            source_absolute_path,
             source_core_path,
-            sizeof(source_core_path))) {
+            sizeof(source_core_path),
+            &core_lookup_ok
+        );
+
+    if (!core_lookup_ok)
+        return false;
+
+    if (!source_core_found) {
         plan_out->kind =
             PLAY_ACTIVITY_TRANSFER_PLAN_ACTIVITY_ONLY;
         return true;
