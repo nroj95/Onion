@@ -301,6 +301,8 @@ change_resolution() {
 }
 
 launch_game() {
+    wait_for_startup_time_sync
+
     log "\n:: Launch game"
     cmd=$(cat $sysdir/cmd_to_run.sh)
     TZ_VALUE=$(cat "$sysdir/config/.tz")
@@ -442,6 +444,23 @@ launch_game() {
     fi
 
     launch_game_postprocess $is_game "$launch_script" "$rompath"
+}
+
+wait_for_startup_time_sync() {
+    [ -f "$sysdir/config/.ntpWait" ] || return
+    [ -f /tmp/ntp_startup_syncing ] || return
+
+    bootScreen Boot "Syncing time..."
+
+    while [ -f /tmp/ntp_startup_syncing ]; do
+        sleep 0.1
+    done
+
+    if [ -f /tmp/ntp_synced ]; then
+        bootScreen Boot "Time synced: $(date +"%H:%M")"
+    else
+        bootScreen Boot "Time sync failed"
+    fi
 }
 
 force_retroarch_cfg() {

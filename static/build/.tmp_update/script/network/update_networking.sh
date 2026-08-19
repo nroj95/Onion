@@ -77,7 +77,15 @@ check() {
     local has_wifi=$(wifi_enabled && echo 1 || echo 0)
     local temporary_wifi_enabled=0
 
-    check_wifi
+    local skip_wifi_off=0
+
+    if [ "$is_booting" -eq 1 ] &&
+        [ "$has_wifi" -eq 0 ] &&
+        [ "$force_wifi_on_startup" -eq 1 ]; then
+        skip_wifi_off=1
+    fi
+
+    check_wifi "$skip_wifi_off"
     check_ftpstate &
     check_sshstate &
     check_telnetstate &
@@ -97,12 +105,14 @@ check() {
         fi
     fi
 
-    if [ "$has_wifi" -eq 1 ] && flag_enabled ntpWait && [ $is_booting -eq 1 ]; then
-        bootScreen Boot "Syncing time..."
-        check_ntpstate && bootScreen Boot "Time synced: $(date +"%H:%M")" || bootScreen Boot "Time sync failed"
-        sleep 1
-    elif wifi_enabled; then
-        check_ntpstate &
+    if [ "$has_wifi" -eq 1 ]; then
+        if [ "$is_booting" -eq 1 ]; then
+            touch /tmp/ntp_startup_syncing
+            startup_time_sync "$temporary_wifi_enabled" &
+            temporary_wifi_enabled=0
+        elif wifi_enabled; then
+            check_ntpstate &
+        fi
     fi
 
     if [ -f "$sysdir/.updateAvailable" ] && [ $is_booting -eq 1 ]; then
@@ -113,8 +123,15 @@ check() {
         $sysdir/script/ota_update.sh check &
     fi
 
-    if [ "$temporary_wifi_enabled" -eq 1 ]; then
-        bootScreen Boot "Turning off Wi-Fi..."
+}
+
+startup_time_sync() {
+    temporary_wifi_enabled=$1
+    trap 'rm -f /tmp/ntp_startup_syncing' 0
+
+    check_ntpstate
+
+    if [ "$temporary_wifi_enabled" -eq 1 ] && wifi_disabled; then
         wifi_off
     fi
 }
@@ -139,6 +156,8 @@ disable_all_services() {
 
 # Core function
 check_wifi() {
+    local skip_wifi_off="${1:-0}"
+
     # Fixes lockups entering some apps after enabling wifi (because wpa_supp/udhcpc are preloaded with libpadsp.so)
     libpadspblocker &
 
@@ -158,7 +177,7 @@ check_wifi() {
         else
             if [ ! -f "/tmp/dont_restart_wifi" ]; then
                 store_state
-                wifi_off
+                [ "$skip_wifi_off" -eq 1 ] || wifi_off
             fi
         fi
     fi
@@ -563,13 +582,27 @@ get_time() {
 
     playActivity stop_all
 
-    if ntpdate -t 3 -u time.google.com; then
-        complete_time_sync "NTP"
-        return 0
+    if [ "$is_booting" -eq 1 ]; then
+        sync_time_from_api && return 0
+        log "NTP: API time failed, trying NTP"
+        sync_time_from_ntp && return 0
+    else
+        sync_time_from_ntp && return 0
+        log "NTP: NTP failed, trying timeapi.io timestamp"
+        sync_time_from_api && return 0
     fi
 
-    log "NTP: NTP failed, trying timeapi.io timestamp"
+    playActivity resume
+    log "NTP: Failed to synchronize time"
+    return 1
+}
 
+sync_time_from_ntp() {
+    ntpdate -t 3 -u time.google.com || return 1
+    complete_time_sync "NTP"
+}
+
+sync_time_from_api() {
     timeapi_response=$(curl -fs -k -m 5 \
         'https://timeapi.io/api/Time/current/zone?timeZone=UTC')
     timeapi_utc_datetime=$(printf '%s\n' "$timeapi_response" |
@@ -577,15 +610,11 @@ get_time() {
         cut -d. -f1 |
         sed 's/T/ /')
 
-    if [ -n "$timeapi_utc_datetime" ] &&
-        date -u -s "$timeapi_utc_datetime" > /dev/null 2>&1; then
-        complete_time_sync "timeapi.io"
-        return 0
-    fi
+    [ -n "$timeapi_utc_datetime" ] &&
+        date -u -s "$timeapi_utc_datetime" > /dev/null 2>&1 ||
+        return 1
 
-    playActivity resume
-    log "NTP: Failed to synchronize time"
-    return 1
+    complete_time_sync "timeapi.io"
 }
 
 # Utility functions
