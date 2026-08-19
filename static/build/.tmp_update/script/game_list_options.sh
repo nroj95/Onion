@@ -737,10 +737,11 @@ transfer_activity_data() {
             LD_PRELOAD=/mnt/SDCARD/miyoo/lib/libpadsp.so \
                 /mnt/SDCARD/.tmp_update/bin/prompt \
                 -t "Transfer activity?" \
-                -m "Transfer activity and any matching saves and states from:\n\
+                -m "Transfer activity and matching\n\
+saves and states from:\n\
 $candidate_name\n\
 \n\
-Matching save and state files will be renamed for this game." \
+Matching files will be renamed." \
                 "Yes, transfer" \
                 "No, cancel"
 
@@ -753,10 +754,11 @@ Matching save and state files will be renamed for this game." \
             LD_PRELOAD=/mnt/SDCARD/miyoo/lib/libpadsp.so \
                 /mnt/SDCARD/.tmp_update/bin/prompt \
                 -t "Replace game data?" \
-                -m "Transfer activity and matching saves and states from:\n\
+                -m "Transfer activity and matching\n\
+saves and states from:\n\
 $candidate_name\n\
 \n\
-$blocked existing save/state file(s) will be replaced." \
+$blocked existing file(s) will be replaced." \
                 "Yes, replace files" \
                 "No, cancel"
 
@@ -771,7 +773,8 @@ $blocked existing save/state file(s) will be replaced." \
                 -m "Transfer activity and history from:\n\
 $candidate_name\n\
 \n\
-The old core could not be identified, so saves and states will not be changed." \
+Old core could not be identified.\n\
+Saves and states will not change." \
                 "Yes, transfer activity" \
                 "No, cancel"
 
