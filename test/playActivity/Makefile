@@ -31,16 +31,18 @@ test_sources := \
 	test_identity_zip.c \
 	test_identity_cue.c \
 	test_identity_m3u.c \
-	test_identity_schema.c \
-	test_identity_merge.c \
-	test_identity_history.c \
+        test_identity_schema.c \
+        test_identity_merge.c \
+        test_identity_transfer.c \
+        test_identity_history.c \
 	test_identity_assets.c \
 	test_support.c
 
 play_activity_sources := \
 	playActivityIdentity.c \
-	playActivitySchema.c \
-	playActivityHistory.c \
+        playActivitySchema.c \
+        playActivityTransfer.c \
+        playActivityHistory.c \
 	playActivityAssets.c
 
 common_sources := \

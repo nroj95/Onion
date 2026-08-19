@@ -18,6 +18,7 @@ void test_m3u_identity(void);
 void test_identity_schema_storage(void);
 void test_identity_schema_v4_upgrade(void);
 void test_identity_explicit_transfer(void);
+void test_identity_transfer_plan(void);
 void test_history_core_lookup(void);
 void test_asset_migration(void);
 

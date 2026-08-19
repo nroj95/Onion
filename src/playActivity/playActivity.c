@@ -1,11 +1,16 @@
 #include "./playActivity.h"
 #include "./playActivityIdentity.h"
 #include "./playActivitySchema.h"
+#include "./playActivityTransfer.h"
 
+#include "system/settings.h"
+
+#include <errno.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <sys/stat.h>
 #include <string.h>
+#include <sys/stat.h>
 
 
 void printUsage()
@@ -14,6 +19,8 @@ void printUsage()
            "       playActivity start [rom_path] -> Launch the counter for this rom\n"
            "       playActivity candidates [rom_path]\n"
            "                                      -> List matching transfer candidates\n"
+           "       playActivity transfer_plan [source_rom_id] [rom_path]\n"
+           "                                      -> Validate and preflight an explicit transfer\n"
            "       playActivity resume           -> Resume the last rom as a new play activity\n"
            "       playActivity stop [rom_path]  -> Stop the counter for this rom\n"
            "       playActivity stop_all         -> Stop the counter for all roms\n"
@@ -435,6 +442,125 @@ static bool print_transfer_candidates(const char *rom_path)
     return result == SQLITE_DONE;
 }
 
+static bool parse_rom_id(
+    const char *value,
+    int *rom_id_out
+)
+{
+    if (value == NULL ||
+        value[0] == '\0' ||
+        rom_id_out == NULL) {
+        return false;
+    }
+
+    errno = 0;
+
+    char *end = NULL;
+    long parsed = strtol(value, &end, 10);
+
+    if (errno != 0 ||
+        end == value ||
+        *end != '\0' ||
+        parsed < 0 ||
+        parsed > INT_MAX) {
+        return false;
+    }
+
+    *rom_id_out = (int)parsed;
+    return true;
+}
+
+static bool print_transfer_plan(
+    int source_rom_id,
+    const char *destination_rom_path
+)
+{
+    if (source_rom_id < 0 ||
+        destination_rom_path == NULL ||
+        destination_rom_path[0] == '\0') {
+        return false;
+    }
+
+    RomIdentityContext context;
+    memset(&context, 0, sizeof(context));
+
+    if (!rom_identity_context_build(
+            destination_rom_path,
+            &context)) {
+        return false;
+    }
+
+    if (context.kind == ROM_IDENTITY_KIND_ARCADE ||
+        context.kind == ROM_IDENTITY_KIND_UNSUPPORTED) {
+        return false;
+    }
+
+    RomContentIdentity identity;
+    int64_t modified_time = 0;
+
+    if (!calculate_content_identity(
+            destination_rom_path,
+            &identity,
+            &modified_time)) {
+        return false;
+    }
+
+    char destination_file_path[PATH_MAX] = "";
+
+    __ensure_rel_path(
+        destination_file_path,
+        destination_rom_path
+    );
+
+    play_activity_db_open();
+
+    if (play_activity_db == NULL)
+        return false;
+
+    PlayActivityTransferPlan plan;
+
+    bool planned =
+        play_activity_transfer_plan(
+            play_activity_db,
+            source_rom_id,
+            context.system,
+            &identity,
+            destination_file_path,
+            ROMS_FOLDER,
+            HISTORY_PATH,
+            "/mnt/SDCARD/Saves/CurrentProfile/saves",
+            "/mnt/SDCARD/Saves/CurrentProfile/states",
+            &plan
+        );
+
+    play_activity_db_close();
+
+    if (!planned)
+        return false;
+
+    switch (plan.kind) {
+    case PLAY_ACTIVITY_TRANSFER_PLAN_READY:
+        printf("ready\t%s\n", plan.source_core_name);
+        return true;
+
+    case PLAY_ACTIVITY_TRANSFER_PLAN_REPLACE:
+        printf(
+            "replace\t%s\t%d\n",
+            plan.source_core_name,
+            plan.blocked
+        );
+        return true;
+
+    case PLAY_ACTIVITY_TRANSFER_PLAN_ACTIVITY_ONLY:
+        printf("activity-only\n");
+        return true;
+
+    case PLAY_ACTIVITY_TRANSFER_PLAN_INVALID:
+    default:
+        return false;
+    }
+}
+
 static void play_activity_start_with_identity(
     char *rom_file_path
 )
@@ -491,6 +617,39 @@ int main(int argc, char *argv[])
             }
             else {
                 printf("Error: Missing rom_path argument\n");
+                printUsage();
+                return EXIT_FAILURE;
+            }
+        }
+        else if (strcmp(argv[i], "transfer_plan") == 0) {
+            if (i + 2 < argc) {
+                int source_rom_id;
+
+                if (!parse_rom_id(
+                        argv[i + 1],
+                        &source_rom_id)) {
+                    fprintf(
+                        stderr,
+                        "Error: Invalid source_rom_id\n"
+                    );
+                    return EXIT_FAILURE;
+                }
+
+                const char *destination_rom_path =
+                    argv[i + 2];
+
+                i += 2;
+
+                if (!print_transfer_plan(
+                        source_rom_id,
+                        destination_rom_path)) {
+                    return EXIT_FAILURE;
+                }
+            }
+            else {
+                printf(
+                    "Error: Missing source_rom_id or rom_path argument\n"
+                );
                 printUsage();
                 return EXIT_FAILURE;
             }

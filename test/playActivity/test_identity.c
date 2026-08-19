@@ -26,6 +26,7 @@ int main(void)
     test_identity_schema_storage();
     test_identity_schema_v4_upgrade();
     test_identity_explicit_transfer();
+    test_identity_transfer_plan();
     test_history_core_lookup();
     test_asset_migration();
 
