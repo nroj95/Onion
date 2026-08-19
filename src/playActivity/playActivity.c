@@ -1,6 +1,4 @@
 #include "./playActivity.h"
-#include "./playActivityAssets.h"
-#include "./playActivityHistory.h"
 #include "./playActivityIdentity.h"
 #include "./playActivitySchema.h"
 
@@ -9,224 +7,6 @@
 #include <sys/stat.h>
 #include <string.h>
 
-
-#define PLAY_ACTIVITY_HISTORY_PATH \
-    "/mnt/SDCARD/Saves/CurrentProfile/lists/content_history.lpl"
-
-#define PLAY_ACTIVITY_SAVES_ROOT \
-    "/mnt/SDCARD/Saves/CurrentProfile/saves"
-
-#define PLAY_ACTIVITY_STATES_ROOT \
-    "/mnt/SDCARD/Saves/CurrentProfile/states"
-
-static void process_pending_asset_migration(
-    const char *rom_path
-)
-{
-    if (rom_path == NULL || rom_path[0] == '\0')
-        return;
-
-    char old_file_path[PATH_MAX] = "";
-    char new_file_path[PATH_MAX] = "";
-
-    play_activity_db_open();
-
-    if (play_activity_db == NULL)
-        return;
-
-    int rom_id = __db_get_rom_id_by_path(rom_path);
-
-    bool migration_found =
-        rom_id != ROM_NOT_FOUND &&
-        play_activity_asset_migration_load(
-            play_activity_db,
-            rom_id,
-            old_file_path,
-            sizeof(old_file_path),
-            new_file_path,
-            sizeof(new_file_path)
-        );
-
-    play_activity_db_close();
-
-    if (!migration_found)
-        return;
-
-    char history_rom_path[PATH_MAX] = "";
-
-    int history_path_written;
-
-    if (old_file_path[0] == '/') {
-        history_path_written = snprintf(
-            history_rom_path,
-            sizeof(history_rom_path),
-            "%s",
-            old_file_path
-        );
-    }
-    else {
-        history_path_written = snprintf(
-            history_rom_path,
-            sizeof(history_rom_path),
-            "/mnt/SDCARD/Roms/%s",
-            old_file_path
-        );
-    }
-
-    if (history_path_written < 0 ||
-        (size_t)history_path_written >=
-            sizeof(history_rom_path)) {
-        fprintf(
-            stderr,
-            "Warning: old rom path is too long for asset migration: %s\n",
-            old_file_path
-        );
-        return;
-    }
-
-    char core_path[PATH_MAX] = "";
-
-    bool core_found =
-        play_activity_history_find_core_path(
-            PLAY_ACTIVITY_HISTORY_PATH,
-            history_rom_path,
-            core_path,
-            sizeof(core_path)
-        );
-
-    if (!core_found) {
-        core_found =
-            play_activity_history_find_core_path(
-                PLAY_ACTIVITY_HISTORY_PATH,
-                rom_path,
-                core_path,
-                sizeof(core_path)
-            );
-    }
-
-    if (!core_found) {
-        fprintf(
-            stderr,
-            "Warning: unable to resolve core for asset migration: %s\n",
-            rom_path
-        );
-        return;
-    }
-
-    char core_name[256] = "";
-
-    if (!play_activity_asset_core_name(
-            core_path,
-            core_name,
-            sizeof(core_name)
-        )) {
-        fprintf(
-            stderr,
-            "Warning: unable to resolve corename for asset migration: %s\n",
-            core_path
-        );
-        return;
-    }
-
-    char saves_directory[PATH_MAX];
-    char states_directory[PATH_MAX];
-
-    int saves_written = snprintf(
-        saves_directory,
-        sizeof(saves_directory),
-        "%s/%s",
-        PLAY_ACTIVITY_SAVES_ROOT,
-        core_name
-    );
-
-    int states_written = snprintf(
-        states_directory,
-        sizeof(states_directory),
-        "%s/%s",
-        PLAY_ACTIVITY_STATES_ROOT,
-        core_name
-    );
-
-    if (saves_written < 0 ||
-        states_written < 0 ||
-        (size_t)saves_written >= sizeof(saves_directory) ||
-        (size_t)states_written >= sizeof(states_directory)) {
-        fprintf(
-            stderr,
-            "Warning: asset migration path is too long for core: %s\n",
-            core_name
-        );
-        return;
-    }
-
-    PlayActivityAssetMigrationResult saves_result;
-    PlayActivityAssetMigrationResult states_result;
-
-    bool saves_complete =
-        play_activity_asset_migrate_directory(
-            saves_directory,
-            old_file_path,
-            new_file_path,
-            &saves_result
-        );
-
-    bool states_complete =
-        play_activity_asset_migrate_directory(
-            states_directory,
-            old_file_path,
-            new_file_path,
-            &states_result
-        );
-
-    if (!saves_complete || !states_complete) {
-        fprintf(
-            stderr,
-            "Warning: asset migration remains pending for rom %d "
-            "(saves: moved=%d missing=%d blocked=%d failed=%d; "
-            "states: moved=%d missing=%d blocked=%d failed=%d)\n",
-            rom_id,
-            saves_result.moved,
-            saves_result.missing,
-            saves_result.blocked,
-            saves_result.failed,
-            states_result.moved,
-            states_result.missing,
-            states_result.blocked,
-            states_result.failed
-        );
-        return;
-    }
-
-    play_activity_db_open();
-
-    if (play_activity_db == NULL)
-        return;
-
-    bool migration_deleted =
-        play_activity_asset_migration_delete(
-            play_activity_db,
-            rom_id
-        );
-
-    play_activity_db_close();
-
-    if (!migration_deleted) {
-        fprintf(
-            stderr,
-            "Warning: unable to clear completed asset migration for rom %d\n",
-            rom_id
-        );
-        return;
-    }
-
-    printf_debug(
-        "Completed asset migration for rom %d "
-        "(saves moved: %d, states moved: %d)\n",
-        rom_id,
-        saves_result.moved,
-        states_result.moved
-    );
-}
 
 void printUsage()
 {
@@ -430,50 +210,6 @@ static int create_rom_for_path(const char *rom_path)
     return rom_id;
 }
 
-static bool get_stored_rom_path(
-    int rom_id,
-    char *file_path_out,
-    size_t file_path_out_size
-)
-{
-    sqlite3_stmt *statement = play_activity_db_prepare(
-        "SELECT file_path FROM rom WHERE id = ?1 LIMIT 1;"
-    );
-
-    if (statement == NULL)
-        return false;
-
-    sqlite3_bind_int(statement, 1, rom_id);
-
-    bool found = false;
-
-    if (sqlite3_step(statement) == SQLITE_ROW) {
-        const unsigned char *stored_path =
-            sqlite3_column_text(statement, 0);
-
-        if (stored_path != NULL) {
-            int written = snprintf(
-                file_path_out,
-                file_path_out_size,
-                "%s",
-                (const char *)stored_path
-            );
-
-            if (written >= 0 &&
-                (size_t)written < file_path_out_size) {
-                found = true;
-            }
-            else if (file_path_out_size > 0) {
-                file_path_out[0] = '\0';
-            }
-        }
-    }
-
-    sqlite3_finalize(statement);
-
-    return found;
-}
-
 static int resolve_rom_for_start(const char *rom_path)
 {
     RomContentIdentity identity;
@@ -484,6 +220,7 @@ static int resolve_rom_for_start(const char *rom_path)
     bool identity_reused = false;
     bool has_source_signature = false;
 
+    memset(&context, 0, sizeof(context));
     rom_identity_context_build(rom_path, &context);
 
     const char *source_type =
@@ -494,6 +231,10 @@ static int resolve_rom_for_start(const char *rom_path)
     if (play_activity_db == NULL)
         return ROM_NOT_FOUND;
 
+    /*
+     * A rom row belongs to one particular library path. Content identity is
+     * cached for that row but never decides ownership or path reconciliation.
+     */
     int rom_id = __db_get_rom_id_by_path(rom_path);
 
     if (rom_id != ROM_NOT_FOUND &&
@@ -532,11 +273,12 @@ static int resolve_rom_for_start(const char *rom_path)
                 rom_id,
                 source_type,
                 source_signature)) {
-            identity_reused = play_activity_identity_load(
-                play_activity_db,
-                rom_id,
-                &identity
-            );
+            identity_reused =
+                play_activity_identity_load(
+                    play_activity_db,
+                    rom_id,
+                    &identity
+                );
 
             has_identity = identity_reused;
         }
@@ -561,103 +303,18 @@ static int resolve_rom_for_start(const char *rom_path)
             );
     }
 
-    int identity_rom_id = ROM_NOT_FOUND;
-    bool identity_stored = identity_reused;
-
-    if (has_identity) {
-        identity_rom_id = play_activity_identity_find_rom_id(
-            play_activity_db,
-            &identity
-        );
-    }
-
-    if (rom_id != ROM_NOT_FOUND) {
+    if (rom_id != ROM_NOT_FOUND)
         update_rom_for_path(rom_id, rom_path);
-
-        if (identity_rom_id != ROM_NOT_FOUND &&
-            identity_rom_id != rom_id) {
-            char redundant_file_path[PATH_MAX] = "";
-            char current_file_path[PATH_MAX] = "";
-
-            get_stored_rom_path(
-                identity_rom_id,
-                redundant_file_path,
-                sizeof(redundant_file_path)
-            );
-
-            __ensure_rel_path(current_file_path, rom_path);
-
-            identity_stored = play_activity_identity_merge_roms(
-                play_activity_db,
-                rom_id,
-                identity_rom_id,
-                &identity,
-                modified_time,
-                redundant_file_path,
-                current_file_path
-            );
-
-            if (!identity_stored) {
-                fprintf(
-                    stderr,
-                    "Warning: unable to merge duplicate activity rows: "
-                    "%d and %d\n",
-                    rom_id,
-                    identity_rom_id
-                );
-            }
-        }
-    }
-    else if (identity_rom_id != ROM_NOT_FOUND) {
-        char old_file_path[PATH_MAX] = "";
-        char new_file_path[PATH_MAX] = "";
-
-        rom_id = identity_rom_id;
-
-        if (!get_stored_rom_path(
-                rom_id,
-                old_file_path,
-                sizeof(old_file_path))) {
-            fprintf(
-                stderr,
-                "Warning: unable to read stored rom path for identity match: %s\n",
-                rom_path
-            );
-        }
-        else {
-            __ensure_rel_path(new_file_path, rom_path);
-
-            if (play_activity_identity_move_rom_path(
-                    play_activity_db,
-                    rom_id,
-                    old_file_path,
-                    new_file_path)) {
-                /*
-                 * The stable path move is already committed. Refresh the
-                 * descriptive cache metadata separately.
-                 */
-                update_rom_for_path(rom_id, rom_path);
-            }
-            else {
-                fprintf(
-                    stderr,
-                    "Warning: unable to reconcile rom path: %s -> %s\n",
-                    old_file_path,
-                    new_file_path
-                );
-            }
-        }
-    }
-
-    if (rom_id == ROM_NOT_FOUND)
+    else
         rom_id = create_rom_for_path(rom_path);
 
     if (rom_id != ROM_NOT_FOUND &&
         has_identity &&
-        !identity_stored) {
+        !identity_reused) {
         if (!play_activity_identity_store(
                 play_activity_db,
                 rom_id,
+                context.system,
                 &identity,
                 modified_time)) {
             fprintf(
@@ -711,7 +368,6 @@ static void play_activity_start_with_identity(
     if (rom_id == ROM_NOT_FOUND)
         exit(EXIT_FAILURE);
 
-    process_pending_asset_migration(rom_file_path);
 
     char *sql = sqlite3_mprintf(
         "INSERT INTO play_activity(rom_id) VALUES(%d);",
@@ -755,7 +411,6 @@ int main(int argc, char *argv[])
                 char *rom_path = argv[++i];
 
                 play_activity_stop(rom_path);
-                process_pending_asset_migration(rom_path);
             }
             else {
                 printf("Error: Missing rom_path argument\n");

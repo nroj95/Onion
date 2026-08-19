@@ -49,28 +49,107 @@ static bool execute_schema_sql(
     return true;
 }
 
+static bool sqlite_table_exists(
+    sqlite3 *database,
+    const char *table_name
+)
+{
+    sqlite3_stmt *statement = NULL;
+
+    if (sqlite3_prepare_v2(
+            database,
+            "SELECT 1 "
+            "FROM sqlite_master "
+            "WHERE type = 'table' "
+            "  AND name = ?1 "
+            "LIMIT 1;",
+            -1,
+            &statement,
+            NULL
+        ) != SQLITE_OK) {
+        return false;
+    }
+
+    sqlite3_bind_text(
+        statement,
+        1,
+        table_name,
+        -1,
+        SQLITE_TRANSIENT
+    );
+
+    bool exists = sqlite3_step(statement) == SQLITE_ROW;
+    sqlite3_finalize(statement);
+
+    return exists;
+}
+
+static bool sqlite_table_has_column(
+    sqlite3 *database,
+    const char *table_name,
+    const char *column_name
+)
+{
+    char *sql = sqlite3_mprintf(
+        "PRAGMA table_info(%Q);",
+        table_name
+    );
+
+    if (sql == NULL)
+        return false;
+
+    sqlite3_stmt *statement = NULL;
+
+    if (sqlite3_prepare_v2(
+            database,
+            sql,
+            -1,
+            &statement,
+            NULL
+        ) != SQLITE_OK) {
+        sqlite3_free(sql);
+        return false;
+    }
+
+    sqlite3_free(sql);
+
+    bool found = false;
+
+    while (sqlite3_step(statement) == SQLITE_ROW) {
+        const unsigned char *name =
+            sqlite3_column_text(statement, 1);
+
+        if (name != NULL &&
+            strcmp((const char *)name, column_name) == 0) {
+            found = true;
+            break;
+        }
+    }
+
+    sqlite3_finalize(statement);
+
+    return found;
+}
+
 bool play_activity_identity_schema_ensure(sqlite3 *database)
 {
     if (database == NULL)
         return false;
 
-    const char *schema_sql =
-        "BEGIN IMMEDIATE;"
+    if (sqlite3_exec(
+            database,
+            "BEGIN IMMEDIATE;",
+            NULL,
+            NULL,
+            NULL
+        ) != SQLITE_OK) {
+        return false;
+    }
 
+    const char *support_schema_sql =
         "CREATE TABLE IF NOT EXISTS identity_metadata("
         "    key TEXT PRIMARY KEY,"
         "    value TEXT NOT NULL"
-        ");"
-
-        "CREATE TABLE IF NOT EXISTS rom_identity("
-        "    rom_id INTEGER PRIMARY KEY,"
-        "    identity_type TEXT NOT NULL,"
-        "    identity_value TEXT NOT NULL,"
-        "    content_size INTEGER NOT NULL,"
-        "    modified_time INTEGER,"
-        "    created_at INTEGER DEFAULT (strftime('%s', 'now')),"
-        "    updated_at INTEGER,"
-        "    UNIQUE(identity_type, identity_value, content_size)"
         ");"
 
         "CREATE TABLE IF NOT EXISTS rom_identity_source("
@@ -98,39 +177,206 @@ bool play_activity_identity_schema_ensure(sqlite3 *database)
         "    new_file_path TEXT NOT NULL,"
         "    created_at INTEGER DEFAULT (strftime('%s', 'now')),"
         "    updated_at INTEGER"
-        ");"
+        ");";
 
-        "INSERT INTO identity_metadata(key, value) "
-        "VALUES('schema_version', '"
-            STRINGIFY_VALUE(PLAY_ACTIVITY_IDENTITY_SCHEMA_VERSION)
-        "') "
-        "ON CONFLICT(key) DO UPDATE SET value = excluded.value;"
+    bool success =
+        execute_schema_sql(database, support_schema_sql);
 
-        "COMMIT;";
+    bool identity_table_exists =
+        success &&
+        sqlite_table_exists(database, "rom_identity");
 
-    if (execute_schema_sql(database, schema_sql))
-        return true;
+    bool identity_has_system =
+        identity_table_exists &&
+        sqlite_table_has_column(
+            database,
+            "rom_identity",
+            "system"
+        );
 
-    sqlite3_exec(
-        database,
-        "ROLLBACK;",
-        NULL,
-        NULL,
-        NULL
-    );
+    bool migrated_v4_identity = false;
 
-    return false;
+    if (success &&
+        identity_table_exists &&
+        !identity_has_system) {
+        const char *migration_sql =
+            "ALTER TABLE rom_identity "
+            "RENAME TO rom_identity_v4;"
+
+            "CREATE TABLE rom_identity("
+            "    rom_id INTEGER PRIMARY KEY,"
+            "    system TEXT NOT NULL,"
+            "    identity_type TEXT NOT NULL,"
+            "    identity_value TEXT NOT NULL,"
+            "    content_size INTEGER NOT NULL,"
+            "    modified_time INTEGER,"
+            "    created_at INTEGER DEFAULT (strftime('%s', 'now')),"
+            "    updated_at INTEGER"
+            ");"
+
+            "INSERT INTO rom_identity("
+            "    rom_id,"
+            "    system,"
+            "    identity_type,"
+            "    identity_value,"
+            "    content_size,"
+            "    modified_time,"
+            "    created_at,"
+            "    updated_at"
+            ") "
+            "SELECT "
+            "    old_identity.rom_id,"
+            "    COALESCE("
+            "        CASE "
+            "            WHEN tracked_rom.file_path "
+            "                 LIKE '/mnt/SDCARD/Roms/%' THEN "
+            "                substr("
+            "                    substr(tracked_rom.file_path, 18),"
+            "                    1,"
+            "                    instr("
+            "                        substr(tracked_rom.file_path, 18),"
+            "                        '/'"
+            "                    ) - 1"
+            "                ) "
+            "            WHEN tracked_rom.file_path "
+            "                 LIKE '../../Roms/%' THEN "
+            "                substr("
+            "                    substr(tracked_rom.file_path, 12),"
+            "                    1,"
+            "                    instr("
+            "                        substr(tracked_rom.file_path, 12),"
+            "                        '/'"
+            "                    ) - 1"
+            "                ) "
+            "            WHEN tracked_rom.file_path "
+            "                 LIKE '/Roms/%' THEN "
+            "                substr("
+            "                    substr(tracked_rom.file_path, 7),"
+            "                    1,"
+            "                    instr("
+            "                        substr(tracked_rom.file_path, 7),"
+            "                        '/'"
+            "                    ) - 1"
+            "                ) "
+            "            WHEN instr(tracked_rom.file_path, '/') > 0 THEN "
+            "                substr("
+            "                    tracked_rom.file_path,"
+            "                    1,"
+            "                    instr(tracked_rom.file_path, '/') - 1"
+            "                ) "
+            "            ELSE '' "
+            "        END,"
+            "        ''"
+            "    ),"
+            "    old_identity.identity_type,"
+            "    old_identity.identity_value,"
+            "    old_identity.content_size,"
+            "    old_identity.modified_time,"
+            "    old_identity.created_at,"
+            "    old_identity.updated_at "
+            "FROM rom_identity_v4 AS old_identity "
+            "LEFT JOIN rom AS tracked_rom "
+            "    ON tracked_rom.id = old_identity.rom_id;"
+
+            "DROP TABLE rom_identity_v4;";
+
+        success =
+            execute_schema_sql(database, migration_sql);
+
+        migrated_v4_identity = success;
+    }
+    else if (success && !identity_table_exists) {
+        const char *create_identity_sql =
+            "CREATE TABLE rom_identity("
+            "    rom_id INTEGER PRIMARY KEY,"
+            "    system TEXT NOT NULL,"
+            "    identity_type TEXT NOT NULL,"
+            "    identity_value TEXT NOT NULL,"
+            "    content_size INTEGER NOT NULL,"
+            "    modified_time INTEGER,"
+            "    created_at INTEGER DEFAULT (strftime('%s', 'now')),"
+            "    updated_at INTEGER"
+            ");";
+
+        success =
+            execute_schema_sql(database, create_identity_sql);
+    }
+
+    if (success) {
+        success = execute_schema_sql(
+            database,
+            "CREATE INDEX IF NOT EXISTS "
+            "rom_identity_match_index "
+            "ON rom_identity("
+            "    system,"
+            "    identity_type,"
+            "    identity_value,"
+            "    content_size"
+            ");"
+        );
+    }
+
+    /*
+     * v4 migrations were created by automatic rename inference. They must
+     * never execute after upgrading to the conservative v5 identity model.
+     */
+    if (success && migrated_v4_identity) {
+        success = execute_schema_sql(
+            database,
+            "DELETE FROM rom_asset_migration;"
+        );
+    }
+
+    if (success) {
+        success = execute_schema_sql(
+            database,
+            "INSERT INTO identity_metadata(key, value) "
+            "VALUES('schema_version', '"
+                STRINGIFY_VALUE(
+                    PLAY_ACTIVITY_IDENTITY_SCHEMA_VERSION
+                )
+            "') "
+            "ON CONFLICT(key) DO UPDATE "
+            "SET value = excluded.value;"
+        );
+    }
+
+    if (success) {
+        success =
+            sqlite3_exec(
+                database,
+                "COMMIT;",
+                NULL,
+                NULL,
+                NULL
+            ) == SQLITE_OK;
+    }
+
+    if (!success) {
+        sqlite3_exec(
+            database,
+            "ROLLBACK;",
+            NULL,
+            NULL,
+            NULL
+        );
+    }
+
+    return success;
 }
 
 bool play_activity_identity_store(
     sqlite3 *database,
     int rom_id,
+    const char *system,
     const RomContentIdentity *identity,
     int64_t modified_time
 )
 {
     if (database == NULL ||
         rom_id < 0 ||
+        system == NULL ||
+        system[0] == '\0' ||
         identity == NULL ||
         identity->type[0] == '\0' ||
         identity->value[0] == '\0') {
@@ -140,13 +386,15 @@ bool play_activity_identity_store(
     const char *sql =
         "INSERT INTO rom_identity("
         "    rom_id,"
+        "    system,"
         "    identity_type,"
         "    identity_value,"
         "    content_size,"
         "    modified_time,"
         "    updated_at"
-        ") VALUES(?1, ?2, ?3, ?4, ?5, strftime('%s', 'now')) "
+        ") VALUES(?1, ?2, ?3, ?4, ?5, ?6, strftime('%s', 'now')) "
         "ON CONFLICT(rom_id) DO UPDATE SET "
+        "    system = excluded.system,"
         "    identity_type = excluded.identity_type,"
         "    identity_value = excluded.identity_value,"
         "    content_size = excluded.content_size,"
@@ -174,25 +422,32 @@ bool play_activity_identity_store(
     sqlite3_bind_text(
         statement,
         2,
-        identity->type,
+        system,
         -1,
         SQLITE_TRANSIENT
     );
     sqlite3_bind_text(
         statement,
         3,
+        identity->type,
+        -1,
+        SQLITE_TRANSIENT
+    );
+    sqlite3_bind_text(
+        statement,
+        4,
         identity->value,
         -1,
         SQLITE_TRANSIENT
     );
     sqlite3_bind_int64(
         statement,
-        4,
+        5,
         (sqlite3_int64)identity->content_size
     );
     sqlite3_bind_int64(
         statement,
-        5,
+        6,
         (sqlite3_int64)modified_time
     );
 
@@ -511,72 +766,6 @@ void play_activity_identity_source_delete(
     sqlite3_finalize(statement);
 }
 
-int play_activity_identity_find_rom_id(
-    sqlite3 *database,
-    const RomContentIdentity *identity
-)
-{
-    if (database == NULL ||
-        identity == NULL ||
-        identity->type[0] == '\0' ||
-        identity->value[0] == '\0') {
-        return -1;
-    }
-
-    const char *sql =
-        "SELECT rom_id "
-        "FROM rom_identity "
-        "WHERE identity_type = ?1 "
-        "  AND identity_value = ?2 "
-        "  AND content_size = ?3 "
-        "LIMIT 1;";
-
-    sqlite3_stmt *statement = NULL;
-
-    if (sqlite3_prepare_v2(
-            database,
-            sql,
-            -1,
-            &statement,
-            NULL
-        ) != SQLITE_OK) {
-        return -1;
-    }
-
-    sqlite3_bind_text(
-        statement,
-        1,
-        identity->type,
-        -1,
-        SQLITE_TRANSIENT
-    );
-
-    sqlite3_bind_text(
-        statement,
-        2,
-        identity->value,
-        -1,
-        SQLITE_TRANSIENT
-    );
-
-    sqlite3_bind_int64(
-        statement,
-        3,
-        (sqlite3_int64)identity->content_size
-    );
-
-    int rom_id = -1;
-
-    if (sqlite3_step(statement) == SQLITE_ROW)
-        rom_id = sqlite3_column_int(statement, 0);
-
-    sqlite3_finalize(statement);
-
-    return rom_id;
-}
-
-
-
 static bool file_stems_match(
     const char *first_path,
     const char *second_path
@@ -835,6 +1024,7 @@ bool play_activity_identity_merge_roms(
     sqlite3 *database,
     int survivor_rom_id,
     int redundant_rom_id,
+    const char *system,
     const RomContentIdentity *identity,
     int64_t modified_time,
     const char *redundant_file_path,
@@ -845,6 +1035,8 @@ bool play_activity_identity_merge_roms(
         survivor_rom_id < 0 ||
         redundant_rom_id < 0 ||
         survivor_rom_id == redundant_rom_id ||
+        system == NULL ||
+        system[0] == '\0' ||
         identity == NULL ||
         identity->type[0] == '\0' ||
         identity->value[0] == '\0') {
@@ -1029,6 +1221,7 @@ bool play_activity_identity_merge_roms(
         success = play_activity_identity_store(
             database,
             survivor_rom_id,
+            system,
             identity,
             modified_time
         );

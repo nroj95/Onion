@@ -208,8 +208,8 @@ void test_identity_schema_storage(void)
     );
 
     check_condition(
-        sqlite_schema_version_matches(database, "4"),
-        "identity schema stores version 4"
+        sqlite_schema_version_matches(database, "5"),
+        "identity schema stores version 5"
     );
 
     check_condition(
@@ -381,6 +381,7 @@ void test_identity_schema_storage(void)
         play_activity_identity_store(
             database,
             7,
+            "GBA",
             &stored_identity,
             123456789
         ),
@@ -452,34 +453,53 @@ void test_identity_schema_storage(void)
         "%s",
         "deadbeef"
     );
-    second_collision_identity.content_size = 200;
+    second_collision_identity.content_size = 100;
 
     check_condition(
         play_activity_identity_store(
             database,
             90,
+            "GB",
             &first_collision_identity,
             1000
         ) &&
         play_activity_identity_store(
             database,
             91,
+            "GB",
+            &second_collision_identity,
+            1000
+        ) &&
+        play_activity_identity_store(
+            database,
+            92,
+            "GBC",
             &second_collision_identity,
             1000
         ),
-        "store same hash with different content sizes"
+        "store duplicate identities across library instances"
     );
 
     check_condition(
-        play_activity_identity_find_rom_id(
+        sqlite_scalar_int(
             database,
-            &first_collision_identity
-        ) == 90 &&
-        play_activity_identity_find_rom_id(
+            "SELECT COUNT(*) "
+            "FROM rom_identity "
+            "WHERE system = 'GB' "
+            "  AND identity_type = 'crc32' "
+            "  AND identity_value = 'deadbeef' "
+            "  AND content_size = 100;"
+        ) == 2 &&
+        sqlite_scalar_int(
             database,
-            &second_collision_identity
-        ) == 91,
-        "content size distinguishes matching hashes"
+            "SELECT COUNT(*) "
+            "FROM rom_identity "
+            "WHERE system = 'GBC' "
+            "  AND identity_type = 'crc32' "
+            "  AND identity_value = 'deadbeef' "
+            "  AND content_size = 100;"
+        ) == 1,
+        "duplicate identities remain separate and system scoped"
     );
 
     RomContentIdentity unchanged_identity;
@@ -698,6 +718,175 @@ void test_identity_schema_storage(void)
     );
 
 
+
+    sqlite3_close(database);
+}
+
+void test_identity_schema_v4_upgrade(void)
+{
+    sqlite3 *database = NULL;
+
+    bool database_opened =
+        sqlite3_open(":memory:", &database) == SQLITE_OK;
+
+    check_condition(
+        database_opened,
+        "open v4 upgrade database"
+    );
+
+    if (!database_opened) {
+        if (database != NULL)
+            sqlite3_close(database);
+
+        return;
+    }
+
+    const char *v4_schema =
+        "CREATE TABLE rom("
+        "    id INTEGER PRIMARY KEY,"
+        "    file_path TEXT NOT NULL"
+        ");"
+        "INSERT INTO rom(id, file_path) VALUES"
+        "    (1, 'GB/old-name.gb'),"
+        "    (2, '/mnt/SDCARD/Roms/GBC/second.gbc'),"
+        "    (3, 'GB/copy.gb');"
+
+        "CREATE TABLE identity_metadata("
+        "    key TEXT PRIMARY KEY,"
+        "    value TEXT NOT NULL"
+        ");"
+        "INSERT INTO identity_metadata(key, value) "
+        "VALUES('schema_version', '4');"
+
+        "CREATE TABLE rom_identity("
+        "    rom_id INTEGER PRIMARY KEY,"
+        "    identity_type TEXT NOT NULL,"
+        "    identity_value TEXT NOT NULL,"
+        "    content_size INTEGER NOT NULL,"
+        "    modified_time INTEGER,"
+        "    created_at INTEGER DEFAULT (strftime('%s', 'now')),"
+        "    updated_at INTEGER,"
+        "    UNIQUE(identity_type, identity_value, content_size)"
+        ");"
+        "INSERT INTO rom_identity("
+        "    rom_id,"
+        "    identity_type,"
+        "    identity_value,"
+        "    content_size,"
+        "    modified_time"
+        ") VALUES"
+        "    (1, 'crc32', '11111111', 100, 1000),"
+        "    (2, 'crc32', '22222222', 200, 2000);"
+
+        "CREATE TABLE rom_asset_migration("
+        "    rom_id INTEGER PRIMARY KEY,"
+        "    old_file_path TEXT NOT NULL,"
+        "    new_file_path TEXT NOT NULL,"
+        "    created_at INTEGER DEFAULT (strftime('%s', 'now')),"
+        "    updated_at INTEGER"
+        ");"
+        "INSERT INTO rom_asset_migration("
+        "    rom_id,"
+        "    old_file_path,"
+        "    new_file_path"
+        ") VALUES("
+        "    1,"
+        "    'GB/old-name.gb',"
+        "    'GB/new-name.gb'"
+        ");";
+
+    check_condition(
+        sqlite3_exec(
+            database,
+            v4_schema,
+            NULL,
+            NULL,
+            NULL
+        ) == SQLITE_OK,
+        "create v4 identity schema fixture"
+    );
+
+    check_condition(
+        play_activity_identity_schema_ensure(database),
+        "upgrade v4 identity schema to v5"
+    );
+
+    check_condition(
+        sqlite_schema_version_matches(database, "5"),
+        "v4 upgrade stores schema version 5"
+    );
+
+    check_condition(
+        sqlite_scalar_int(
+            database,
+            "SELECT COUNT(*) "
+            "FROM rom_identity "
+            "WHERE rom_id = 1 "
+            "  AND system = 'GB' "
+            "  AND identity_value = '11111111';"
+        ) == 1 &&
+        sqlite_scalar_int(
+            database,
+            "SELECT COUNT(*) "
+            "FROM rom_identity "
+            "WHERE rom_id = 2 "
+            "  AND system = 'GBC' "
+            "  AND identity_value = '22222222';"
+        ) == 1,
+        "v4 upgrade preserves identities and backfills systems"
+    );
+
+    check_condition(
+        sqlite_scalar_int(
+            database,
+            "SELECT COUNT(*) FROM rom_asset_migration;"
+        ) == 0,
+        "v4 upgrade discards inferred pending asset migrations"
+    );
+
+    RomContentIdentity duplicate_identity;
+    memset(&duplicate_identity, 0, sizeof(duplicate_identity));
+
+    snprintf(
+        duplicate_identity.type,
+        sizeof(duplicate_identity.type),
+        "%s",
+        "crc32"
+    );
+
+    snprintf(
+        duplicate_identity.value,
+        sizeof(duplicate_identity.value),
+        "%s",
+        "11111111"
+    );
+
+    duplicate_identity.content_size = 100;
+
+    check_condition(
+        play_activity_identity_store(
+            database,
+            3,
+            "GB",
+            &duplicate_identity,
+            3000
+        ) &&
+        sqlite_scalar_int(
+            database,
+            "SELECT COUNT(*) "
+            "FROM rom_identity "
+            "WHERE system = 'GB' "
+            "  AND identity_type = 'crc32' "
+            "  AND identity_value = '11111111' "
+            "  AND content_size = 100;"
+        ) == 2,
+        "upgraded v5 schema accepts identical rom instances"
+    );
+
+    check_condition(
+        play_activity_identity_schema_ensure(database),
+        "v5 schema remains idempotent after upgrade"
+    );
 
     sqlite3_close(database);
 }

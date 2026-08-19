@@ -17,17 +17,18 @@
  * - adds identity tables to onion's existing activity database.
  * - leaves the original rom and play_activity tables unchanged.
  * - stores one current content identity for each stable rom.id.
- * - merges conflicting rom rows while preserving their activity history.
+ * - allows multiple rom rows to share the same system-scoped content identity.
  * =============================================================================
  */
 
-#define PLAY_ACTIVITY_IDENTITY_SCHEMA_VERSION 4
+#define PLAY_ACTIVITY_IDENTITY_SCHEMA_VERSION 5
 
 bool play_activity_identity_schema_ensure(sqlite3 *database);
 
 bool play_activity_identity_store(
     sqlite3 *database,
     int rom_id,
+    const char *system,
     const RomContentIdentity *identity,
     int64_t modified_time
 );
@@ -65,15 +66,11 @@ void play_activity_identity_source_delete(
     int rom_id
 );
 
-int play_activity_identity_find_rom_id(
-    sqlite3 *database,
-    const RomContentIdentity *identity
-);
-
 bool play_activity_identity_merge_roms(
     sqlite3 *database,
     int survivor_rom_id,
     int redundant_rom_id,
+    const char *system,
     const RomContentIdentity *identity,
     int64_t modified_time,
     const char *redundant_file_path,

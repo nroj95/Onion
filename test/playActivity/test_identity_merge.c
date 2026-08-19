@@ -196,12 +196,14 @@ void test_identity_rom_merge(void)
         play_activity_identity_store(
             database,
             10,
+            "FC",
             &survivor_identity,
             1000
         ) &&
         play_activity_identity_store(
             database,
             20,
+            "FC",
             &redundant_identity,
             2000
         );
@@ -274,6 +276,7 @@ void test_identity_rom_merge(void)
             database,
             10,
             20,
+            "FC",
             &final_identity,
             3000,
             "/Roms/FC/old-name.zip",
@@ -416,11 +419,17 @@ void test_identity_rom_merge(void)
     );
 
     check_condition(
-        play_activity_identity_find_rom_id(
+        sqlite_query_int(
             database,
-            &final_identity
-        ) == 10,
-        "merged identity resolves to survivor"
+            "SELECT COUNT(*) "
+            "FROM rom_identity "
+            "WHERE rom_id = 10 "
+            "  AND system = 'FC' "
+            "  AND identity_type = 'crc32' "
+            "  AND identity_value = 'a87f8344' "
+            "  AND content_size = 262160;"
+        ) == 1,
+        "merge stores system-scoped survivor identity"
     );
 
     check_condition(
