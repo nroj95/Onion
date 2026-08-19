@@ -1106,7 +1106,7 @@ bool play_activity_asset_migration_store(
     return result == SQLITE_DONE;
 }
 
-bool play_activity_identity_merge_roms(
+bool play_activity_identity_transfer_roms(
     sqlite3 *database,
     int survivor_rom_id,
     int redundant_rom_id,
@@ -1289,20 +1289,6 @@ bool play_activity_identity_merge_roms(
     }
 
 
-    if (success &&
-        redundant_file_path != NULL &&
-        current_file_path != NULL &&
-        redundant_file_path[0] != '\0' &&
-        current_file_path[0] != '\0' &&
-        strcmp(redundant_file_path, current_file_path) != 0) {
-        success = play_activity_asset_migration_store(
-            database,
-            survivor_rom_id,
-            redundant_file_path,
-            current_file_path
-        );
-    }
-
     if (success) {
         success = play_activity_identity_store(
             database,
@@ -1397,12 +1383,7 @@ bool play_activity_identity_record_path_change(
     if (result != SQLITE_DONE)
         return false;
 
-    return play_activity_asset_migration_store(
-        database,
-        rom_id,
-        old_file_path,
-        new_file_path
-    );
+    return true;
 }
 
 bool play_activity_identity_move_rom_path(
@@ -1475,6 +1456,15 @@ bool play_activity_identity_move_rom_path(
 
     if (success) {
         success = play_activity_identity_record_path_change(
+            database,
+            rom_id,
+            old_file_path,
+            new_file_path
+        );
+    }
+
+    if (success) {
+        success = play_activity_asset_migration_store(
             database,
             rom_id,
             old_file_path,

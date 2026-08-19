@@ -7,13 +7,14 @@
 
 /* =============================================================================
  * purpose:
- * verify duplicate rom reconciliation behavior.
+ * verify explicit activity transfer behavior.
  *
  * key behavior:
  * - preserves activity rows and total play time.
  * - preserves and records path history.
  * - removes stale identity cache rows.
  * - stores the final identity on the surviving rom.
+ * - does not create automatic asset migration work.
  * =============================================================================
  */
 
@@ -75,7 +76,7 @@ static int sqlite_query_int(
     return value;
 }
 
-void test_identity_rom_merge(void)
+void test_identity_explicit_transfer(void)
 {
     sqlite3 *database = NULL;
 
@@ -84,7 +85,7 @@ void test_identity_rom_merge(void)
 
     check_condition(
         database_opened,
-        "open in-memory merge database"
+        "open in-memory transfer database"
     );
 
     if (!database_opened) {
@@ -111,12 +112,12 @@ void test_identity_rom_merge(void)
 
     check_condition(
         base_schema_created,
-        "create merge fixture base tables"
+        "create transfer fixture base tables"
     );
 
     check_condition(
         play_activity_identity_schema_ensure(database),
-        "create identity schema for merge"
+        "create identity schema for transfer"
     );
 
     bool fixture_rows_created =
@@ -143,7 +144,7 @@ void test_identity_rom_merge(void)
 
     check_condition(
         fixture_rows_created,
-        "create duplicate rom merge fixtures"
+        "create explicit transfer fixtures"
     );
 
     RomContentIdentity survivor_identity;
@@ -272,7 +273,7 @@ void test_identity_rom_merge(void)
     final_identity.content_size = 262160;
 
     check_condition(
-        play_activity_identity_merge_roms(
+        play_activity_identity_transfer_roms(
             database,
             10,
             20,
@@ -282,7 +283,7 @@ void test_identity_rom_merge(void)
             "/Roms/FC/old-name.zip",
             "/Roms/FC/current.zip"
         ),
-        "merge duplicate rom rows"
+        "transfer source rom data"
     );
 
     check_condition(
@@ -294,7 +295,7 @@ void test_identity_rom_merge(void)
             database,
             "SELECT COUNT(*) FROM rom WHERE id = 20;"
         ) == 0,
-        "merge keeps survivor and removes duplicate"
+        "transfer keeps destination and removes source"
     );
 
     check_condition(
@@ -310,7 +311,7 @@ void test_identity_rom_merge(void)
             "FROM play_activity "
             "WHERE rom_id = 20;"
         ) == 0,
-        "merge preserves both activity rows"
+        "transfer preserves both activity rows"
     );
 
     check_condition(
@@ -320,7 +321,7 @@ void test_identity_rom_merge(void)
             "FROM play_activity "
             "WHERE rom_id = 10;"
         ) == 360,
-        "merge preserves total play time"
+        "transfer preserves total play time"
     );
 
     check_condition(
@@ -336,7 +337,7 @@ void test_identity_rom_merge(void)
             "FROM rom_path_history "
             "WHERE rom_id = 20;"
         ) == 0,
-        "merge preserves and records path history"
+        "transfer preserves and records path history"
     );
 
     check_condition(
@@ -348,7 +349,7 @@ void test_identity_rom_merge(void)
             "  AND old_file_path = '/Roms/FC/old-name.zip' "
             "  AND new_file_path = '/Roms/FC/current.zip';"
         ) == 1,
-        "merge records duplicate path transition"
+        "transfer records explicit path transition"
     );
 
     check_condition(
@@ -358,39 +359,31 @@ void test_identity_rom_merge(void)
             "FROM rom_identity_source "
             "WHERE rom_id IN (10, 20);"
         ) == 0,
-        "merge removes stale source signatures"
+        "transfer removes stale source signatures"
     );
 
 
-    char merged_old_path[512] = "";
-    char merged_new_path[512] = "";
+    char migration_old_path[512] = "";
+    char migration_new_path[512] = "";
 
     check_condition(
-        play_activity_asset_migration_load(
+        !play_activity_asset_migration_load(
             database,
             10,
-            merged_old_path,
-            sizeof(merged_old_path),
-            merged_new_path,
-            sizeof(merged_new_path)
+            migration_old_path,
+            sizeof(migration_old_path),
+            migration_new_path,
+            sizeof(migration_new_path)
         ) &&
-        strcmp(
-            merged_old_path,
-            "/Roms/FC/old-name.zip"
-        ) == 0 &&
-        strcmp(
-            merged_new_path,
-            "/Roms/FC/current.zip"
-        ) == 0 &&
         !play_activity_asset_migration_load(
             database,
             20,
-            merged_old_path,
-            sizeof(merged_old_path),
-            merged_new_path,
-            sizeof(merged_new_path)
+            migration_old_path,
+            sizeof(migration_old_path),
+            migration_new_path,
+            sizeof(migration_new_path)
         ),
-        "merge replaces stale asset migrations"
+        "transfer clears stale migration bookkeeping"
     );
 
     RomContentIdentity loaded_identity;
@@ -401,7 +394,7 @@ void test_identity_rom_merge(void)
             10,
             &loaded_identity
         ),
-        "load merged survivor identity"
+        "load transferred destination identity"
     );
 
     check_condition(
@@ -415,7 +408,7 @@ void test_identity_rom_merge(void)
         ) == 0 &&
         loaded_identity.content_size ==
             final_identity.content_size,
-        "merge stores final survivor identity"
+        "transfer stores final destination identity"
     );
 
     check_condition(
@@ -429,7 +422,7 @@ void test_identity_rom_merge(void)
             "  AND identity_value = 'a87f8344' "
             "  AND content_size = 262160;"
         ) == 1,
-        "merge stores system-scoped survivor identity"
+        "transfer stores system-scoped destination identity"
     );
 
     check_condition(

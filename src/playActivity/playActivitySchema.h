@@ -73,7 +73,7 @@ sqlite3_stmt *play_activity_identity_prepare_candidates(
     const char *excluded_file_path
 );
 
-bool play_activity_identity_merge_roms(
+bool play_activity_identity_transfer_roms(
     sqlite3 *database,
     int survivor_rom_id,
     int redundant_rom_id,
