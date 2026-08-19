@@ -1131,7 +1131,7 @@ bool play_activity_identity_transfer_roms(
 
     if (sqlite3_exec(
             database,
-            "BEGIN IMMEDIATE;",
+            "SAVEPOINT play_activity_transfer;",
             NULL,
             NULL,
             NULL) != SQLITE_OK) {
@@ -1302,7 +1302,7 @@ bool play_activity_identity_transfer_roms(
     if (success) {
         success = sqlite3_exec(
             database,
-            "COMMIT;",
+            "RELEASE play_activity_transfer;",
             NULL,
             NULL,
             NULL
@@ -1312,7 +1312,8 @@ bool play_activity_identity_transfer_roms(
     if (!success) {
         sqlite3_exec(
             database,
-            "ROLLBACK;",
+            "ROLLBACK TO play_activity_transfer;"
+            "RELEASE play_activity_transfer;",
             NULL,
             NULL,
             NULL

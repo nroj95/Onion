@@ -212,6 +212,19 @@ bool play_activity_transfer_plan(
         return false;
     }
 
+    int source_written = snprintf(
+        plan_out->source_file_path,
+        sizeof(plan_out->source_file_path),
+        "%s",
+        source_file_path
+    );
+
+    if (source_written < 0 ||
+        (size_t)source_written >=
+            sizeof(plan_out->source_file_path)) {
+        return false;
+    }
+
     char source_absolute_path[PATH_MAX] = "";
 
     if (!play_activity_transfer_stored_path_to_absolute(
@@ -245,20 +258,17 @@ bool play_activity_transfer_plan(
         return true;
     }
 
-    char saves_directory[PATH_MAX];
-    char states_directory[PATH_MAX];
-
     int saves_written = snprintf(
-        saves_directory,
-        sizeof(saves_directory),
+        plan_out->saves_directory,
+        sizeof(plan_out->saves_directory),
         "%s/%s",
         saves_root,
         plan_out->source_core_name
     );
 
     int states_written = snprintf(
-        states_directory,
-        sizeof(states_directory),
+        plan_out->states_directory,
+        sizeof(plan_out->states_directory),
         "%s/%s",
         states_root,
         plan_out->source_core_name
@@ -266,8 +276,10 @@ bool play_activity_transfer_plan(
 
     if (saves_written < 0 ||
         states_written < 0 ||
-        (size_t)saves_written >= sizeof(saves_directory) ||
-        (size_t)states_written >= sizeof(states_directory)) {
+        (size_t)saves_written >=
+            sizeof(plan_out->saves_directory) ||
+        (size_t)states_written >=
+            sizeof(plan_out->states_directory)) {
         return false;
     }
 
@@ -275,8 +287,8 @@ bool play_activity_transfer_plan(
 
     PlayActivityAssetTransfer *asset_transfer =
         play_activity_asset_transfer_prepare(
-            saves_directory,
-            states_directory,
+            plan_out->saves_directory,
+            plan_out->states_directory,
             source_file_path,
             destination_file_path,
             false,

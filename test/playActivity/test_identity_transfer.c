@@ -1,3 +1,4 @@
+#include "playActivityAssets.h"
 #include "playActivitySchema.h"
 #include "playActivityTransfer.h"
 #include "test_support.h"
@@ -41,6 +42,28 @@ static bool join_fixture_path(
     );
 
     return true;
+}
+
+static int query_fixture_int(
+    sqlite3 *database,
+    const char *sql
+)
+{
+    sqlite3_stmt *statement = NULL;
+    int value = -1;
+
+    if (sqlite3_prepare_v2(
+            database,
+            sql,
+            -1,
+            &statement,
+            NULL) == SQLITE_OK &&
+        sqlite3_step(statement) == SQLITE_ROW) {
+        value = sqlite3_column_int(statement, 0);
+    }
+
+    sqlite3_finalize(statement);
+    return value;
 }
 
 void test_identity_transfer_plan(void)
@@ -366,8 +389,20 @@ void test_identity_transfer_plan(void)
             plan.source_core_name,
             "Gambatte"
         ) == 0 &&
+        strcmp(
+            plan.source_file_path,
+            "GB/old-name.gb"
+        ) == 0 &&
+        strcmp(
+            plan.saves_directory,
+            saves_directory
+        ) == 0 &&
+        strcmp(
+            plan.states_directory,
+            states_directory
+        ) == 0 &&
         plan.blocked == 0,
-        "ready plan resolves source core"
+        "ready plan resolves source asset locations"
     );
 
     check_condition(
@@ -457,6 +492,174 @@ void test_identity_transfer_plan(void)
             &plan
         ),
         "transfer planner rejects other system"
+    );
+
+    check_condition(
+        sqlite3_exec(
+            database,
+            "INSERT INTO play_activity("
+            "    rom_id, play_time"
+            ") VALUES(90, 321);"
+            "CREATE TEMP TRIGGER "
+            "fail_explicit_transfer "
+            "BEFORE UPDATE OF rom_id ON play_activity "
+            "WHEN OLD.rom_id = 90 "
+            "BEGIN "
+            "    SELECT RAISE("
+            "        FAIL,"
+            "        'forced explicit transfer failure'"
+            "    );"
+            "END;",
+            NULL,
+            NULL,
+            NULL
+        ) == SQLITE_OK,
+        "create forced coordinator database failure"
+    );
+
+    bool outer_transaction_open =
+        sqlite3_exec(
+            database,
+            "BEGIN IMMEDIATE;",
+            NULL,
+            NULL,
+            NULL
+        ) == SQLITE_OK;
+
+    PlayActivityTransferPlan rollback_plan;
+
+    bool rollback_plan_ready =
+        outer_transaction_open &&
+        play_activity_transfer_plan(
+            database,
+            90,
+            "GB",
+            &identity,
+            "GB/new-name.gb",
+            roms_root,
+            history_path,
+            saves_root,
+            states_root,
+            &rollback_plan
+        ) &&
+        rollback_plan.kind ==
+            PLAY_ACTIVITY_TRANSFER_PLAN_READY;
+
+    check_condition(
+        rollback_plan_ready,
+        "revalidate transfer under coordinator write lock"
+    );
+
+    PlayActivityAssetTransferResult asset_result;
+
+    PlayActivityAssetTransfer *rollback_transfer = NULL;
+
+    if (rollback_plan_ready) {
+        rollback_transfer =
+            play_activity_asset_transfer_prepare(
+                rollback_plan.saves_directory,
+                rollback_plan.states_directory,
+                rollback_plan.source_file_path,
+                "GB/new-name.gb",
+                false,
+                &asset_result
+            );
+    }
+
+    bool assets_applied =
+        rollback_transfer != NULL &&
+        play_activity_asset_transfer_apply(
+            rollback_transfer,
+            &asset_result
+        );
+
+    check_condition(
+        assets_applied &&
+        access(old_save_path, F_OK) != 0 &&
+        access(old_state_path, F_OK) != 0 &&
+        access(new_save_path, F_OK) == 0,
+        "apply assets before forced coordinator failure"
+    );
+
+    bool database_failed =
+        assets_applied &&
+        sqlite3_exec(
+            database,
+            "INSERT INTO rom("
+            "    id, name, file_path"
+            ") VALUES("
+            "    91, 'new name', 'GB/new-name.gb'"
+            ");",
+            NULL,
+            NULL,
+            NULL
+        ) == SQLITE_OK &&
+        !play_activity_identity_transfer_roms(
+            database,
+            91,
+            90,
+            "GB",
+            &identity,
+            987654321,
+            rollback_plan.source_file_path,
+            "GB/new-name.gb"
+        );
+
+    check_condition(
+        database_failed,
+        "force database failure after asset rename"
+    );
+
+    if (outer_transaction_open) {
+        sqlite3_exec(
+            database,
+            "ROLLBACK;",
+            NULL,
+            NULL,
+            NULL
+        );
+    }
+
+    bool assets_rolled_back =
+        rollback_transfer != NULL &&
+        play_activity_asset_transfer_rollback(
+            rollback_transfer
+        );
+
+    check_condition(
+        assets_rolled_back &&
+        access(old_save_path, F_OK) == 0 &&
+        access(old_state_path, F_OK) == 0 &&
+        access(new_save_path, F_OK) != 0,
+        "coordinator failure restores save and state names"
+    );
+
+    check_condition(
+        query_fixture_int(
+            database,
+            "SELECT COUNT(*) FROM rom WHERE id = 90;"
+        ) == 1 &&
+        query_fixture_int(
+            database,
+            "SELECT COUNT(*) FROM rom WHERE id = 91;"
+        ) == 0 &&
+        query_fixture_int(
+            database,
+            "SELECT COUNT(*) "
+            "FROM play_activity "
+            "WHERE rom_id = 90 AND play_time = 321;"
+        ) == 1 &&
+        query_fixture_int(
+            database,
+            "SELECT COUNT(*) "
+            "FROM play_activity "
+            "WHERE rom_id = 91;"
+        ) == 0,
+        "coordinator failure restores database state"
+    );
+
+    play_activity_asset_transfer_free(
+        rollback_transfer
     );
 
     if (database != NULL)

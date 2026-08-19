@@ -273,6 +273,13 @@ void test_identity_explicit_transfer(void)
     final_identity.content_size = 262160;
 
     check_condition(
+        sqlite3_exec(
+            database,
+            "BEGIN IMMEDIATE;",
+            NULL,
+            NULL,
+            NULL
+        ) == SQLITE_OK &&
         play_activity_identity_transfer_roms(
             database,
             10,
@@ -282,8 +289,15 @@ void test_identity_explicit_transfer(void)
             3000,
             "/Roms/FC/old-name.zip",
             "/Roms/FC/current.zip"
-        ),
-        "transfer source rom data"
+        ) &&
+        sqlite3_exec(
+            database,
+            "COMMIT;",
+            NULL,
+            NULL,
+            NULL
+        ) == SQLITE_OK,
+        "transfer source rom data inside caller transaction"
     );
 
     check_condition(

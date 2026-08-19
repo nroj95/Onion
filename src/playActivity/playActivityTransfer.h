@@ -2,6 +2,7 @@
 #define PLAY_ACTIVITY_TRANSFER_H
 
 #include <stdbool.h>
+#include <limits.h>
 #include <stddef.h>
 
 #include <sqlite3/sqlite3.h>
@@ -17,7 +18,10 @@ typedef enum {
 
 typedef struct {
     PlayActivityTransferPlanKind kind;
+    char source_file_path[PATH_MAX];
     char source_core_name[256];
+    char saves_directory[PATH_MAX];
+    char states_directory[PATH_MAX];
     int blocked;
 } PlayActivityTransferPlan;
 

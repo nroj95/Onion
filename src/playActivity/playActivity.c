@@ -1,4 +1,5 @@
 #include "./playActivity.h"
+#include "./playActivityAssets.h"
 #include "./playActivityIdentity.h"
 #include "./playActivitySchema.h"
 #include "./playActivityTransfer.h"
@@ -21,6 +22,8 @@ void printUsage()
            "                                      -> List matching transfer candidates\n"
            "       playActivity transfer_plan [source_rom_id] [rom_path]\n"
            "                                      -> Validate and preflight an explicit transfer\n"
+           "       playActivity transfer [source_rom_id] [rom_path] [--replace]\n"
+           "                                      -> Perform an explicit transfer\n"
            "       playActivity resume           -> Resume the last rom as a new play activity\n"
            "       playActivity stop [rom_path]  -> Stop the counter for this rom\n"
            "       playActivity stop_all         -> Stop the counter for all roms\n"
@@ -561,6 +564,212 @@ static bool print_transfer_plan(
     }
 }
 
+static bool perform_transfer(
+    int source_rom_id,
+    const char *destination_rom_path,
+    bool replace_existing
+)
+{
+    if (source_rom_id < 0 ||
+        destination_rom_path == NULL ||
+        destination_rom_path[0] == '\0') {
+        return false;
+    }
+
+    RomIdentityContext context;
+    memset(&context, 0, sizeof(context));
+
+    if (!rom_identity_context_build(
+            destination_rom_path,
+            &context)) {
+        return false;
+    }
+
+    if (context.kind == ROM_IDENTITY_KIND_ARCADE ||
+        context.kind == ROM_IDENTITY_KIND_UNSUPPORTED) {
+        return false;
+    }
+
+    RomContentIdentity identity;
+    int64_t modified_time = 0;
+
+    if (!calculate_content_identity(
+            destination_rom_path,
+            &identity,
+            &modified_time)) {
+        return false;
+    }
+
+    char destination_file_path[PATH_MAX] = "";
+
+    __ensure_rel_path(
+        destination_file_path,
+        destination_rom_path
+    );
+
+    play_activity_db_open();
+
+    if (play_activity_db == NULL)
+        return false;
+
+    bool database_transaction_open = false;
+    bool success = false;
+    bool assets_applied = false;
+
+    PlayActivityAssetTransfer *asset_transfer = NULL;
+
+    if (sqlite3_exec(
+            play_activity_db,
+            "BEGIN IMMEDIATE;",
+            NULL,
+            NULL,
+            NULL) != SQLITE_OK) {
+        goto cleanup;
+    }
+
+    database_transaction_open = true;
+
+    /*
+     * Re-plan while holding the database write lock. This makes the selected
+     * source rom_id authoritative for this transfer rather than trusting
+     * candidate output produced by an earlier invocation.
+     */
+    PlayActivityTransferPlan plan;
+
+    if (!play_activity_transfer_plan(
+            play_activity_db,
+            source_rom_id,
+            context.system,
+            &identity,
+            destination_file_path,
+            ROMS_FOLDER,
+            HISTORY_PATH,
+            "/mnt/SDCARD/Saves/CurrentProfile/saves",
+            "/mnt/SDCARD/Saves/CurrentProfile/states",
+            &plan)) {
+        goto cleanup;
+    }
+
+    if (plan.kind == PLAY_ACTIVITY_TRANSFER_PLAN_REPLACE &&
+        !replace_existing) {
+        fprintf(
+            stderr,
+            "Error: transfer would replace %d existing save/state file(s)\n",
+            plan.blocked
+        );
+        goto cleanup;
+    }
+
+    if (plan.kind !=
+        PLAY_ACTIVITY_TRANSFER_PLAN_ACTIVITY_ONLY) {
+        PlayActivityAssetTransferResult asset_result;
+
+        asset_transfer =
+            play_activity_asset_transfer_prepare(
+                plan.saves_directory,
+                plan.states_directory,
+                plan.source_file_path,
+                destination_file_path,
+                replace_existing,
+                &asset_result
+            );
+
+        if (asset_transfer == NULL) {
+            fprintf(
+                stderr,
+                "Error: unable to prepare save/state transfer\n"
+            );
+            goto cleanup;
+        }
+
+        if (!play_activity_asset_transfer_apply(
+                asset_transfer,
+                &asset_result)) {
+            fprintf(
+                stderr,
+                "Error: unable to rename save/state files\n"
+            );
+            goto cleanup;
+        }
+
+        assets_applied = true;
+    }
+
+    int destination_rom_id =
+        __db_get_rom_id_by_path(destination_rom_path);
+
+    if (destination_rom_id == ROM_NOT_FOUND) {
+        destination_rom_id =
+            create_rom_for_path(destination_rom_path);
+    }
+
+    if (destination_rom_id == ROM_NOT_FOUND ||
+        destination_rom_id == source_rom_id) {
+        goto cleanup;
+    }
+
+    /*
+     * This helper now uses a savepoint, so when called here it participates
+     * in our outer transaction. When called by itself it remains atomic.
+     */
+    if (!play_activity_identity_transfer_roms(
+            play_activity_db,
+            destination_rom_id,
+            source_rom_id,
+            context.system,
+            &identity,
+            modified_time,
+            plan.source_file_path,
+            destination_file_path)) {
+        goto cleanup;
+    }
+
+    if (sqlite3_exec(
+            play_activity_db,
+            "COMMIT;",
+            NULL,
+            NULL,
+            NULL) != SQLITE_OK) {
+        goto cleanup;
+    }
+
+    database_transaction_open = false;
+    success = true;
+
+    if (asset_transfer != NULL)
+        play_activity_asset_transfer_commit(asset_transfer);
+
+cleanup:
+    if (!success && database_transaction_open) {
+        sqlite3_exec(
+            play_activity_db,
+            "ROLLBACK;",
+            NULL,
+            NULL,
+            NULL
+        );
+    }
+
+    if (!success &&
+        assets_applied &&
+        asset_transfer != NULL &&
+        !play_activity_asset_transfer_rollback(
+            asset_transfer)) {
+        fprintf(
+            stderr,
+            "Warning: unable to fully roll back save/state files\n"
+        );
+    }
+
+    play_activity_asset_transfer_free(asset_transfer);
+    play_activity_db_close();
+
+    if (success)
+        printf("transferred\n");
+
+    return success;
+}
+
 static void play_activity_start_with_identity(
     char *rom_file_path
 )
@@ -643,6 +852,51 @@ int main(int argc, char *argv[])
                 if (!print_transfer_plan(
                         source_rom_id,
                         destination_rom_path)) {
+                    return EXIT_FAILURE;
+                }
+            }
+            else {
+                printf(
+                    "Error: Missing source_rom_id or rom_path argument\n"
+                );
+                printUsage();
+                return EXIT_FAILURE;
+            }
+        }
+        else if (strcmp(argv[i], "transfer") == 0) {
+            if (i + 2 < argc) {
+                int source_rom_id;
+
+                if (!parse_rom_id(
+                        argv[i + 1],
+                        &source_rom_id)) {
+                    fprintf(
+                        stderr,
+                        "Error: Invalid source_rom_id\n"
+                    );
+                    return EXIT_FAILURE;
+                }
+
+                const char *destination_rom_path =
+                    argv[i + 2];
+
+                bool replace_existing = false;
+
+                if (i + 3 < argc &&
+                    strcmp(
+                        argv[i + 3],
+                        "--replace"
+                    ) == 0) {
+                    replace_existing = true;
+                    i++;
+                }
+
+                i += 2;
+
+                if (!perform_transfer(
+                        source_rom_id,
+                        destination_rom_path,
+                        replace_existing)) {
                     return EXIT_FAILURE;
                 }
             }
