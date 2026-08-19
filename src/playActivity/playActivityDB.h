@@ -149,6 +149,64 @@ int play_activity_get_total_play_time(void)
     return total_play_time;
 }
 
+bool play_activity_delete_rom(int rom_id)
+{
+    if (rom_id < 0)
+        return false;
+
+    play_activity_db_open();
+
+    if (play_activity_db == NULL)
+        return false;
+
+    char *sql = sqlite3_mprintf(
+        "BEGIN IMMEDIATE;"
+        "DELETE FROM play_activity "
+        "WHERE rom_id = %d;"
+        "DELETE FROM rom_asset_migration "
+        "WHERE rom_id = %d;"
+        "DELETE FROM rom_identity_source "
+        "WHERE rom_id = %d;"
+        "DELETE FROM rom_identity "
+        "WHERE rom_id = %d;"
+        "DELETE FROM rom_path_history "
+        "WHERE rom_id = %d;"
+        "DELETE FROM rom "
+        "WHERE id = %d;"
+        "COMMIT;",
+        rom_id,
+        rom_id,
+        rom_id,
+        rom_id,
+        rom_id,
+        rom_id
+    );
+
+    int result = sqlite3_exec(
+        play_activity_db,
+        sql,
+        NULL,
+        NULL,
+        NULL
+    );
+
+    sqlite3_free(sql);
+
+    if (result != SQLITE_OK) {
+        sqlite3_exec(
+            play_activity_db,
+            "ROLLBACK;",
+            NULL,
+            NULL,
+            NULL
+        );
+    }
+
+    play_activity_db_close();
+
+    return result == SQLITE_OK;
+}
+
 PlayActivities *play_activity_find_all(void)
 {
     PlayActivities *play_activities = NULL;
