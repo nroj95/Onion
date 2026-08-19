@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 /* =============================================================================
  * purpose:
@@ -413,4 +414,492 @@ bool play_activity_asset_migrate_directory(
 
     return result_out->blocked == 0 &&
            result_out->failed == 0;
+}
+
+typedef struct {
+    char *source_path;
+    char *destination_path;
+    char *backup_path;
+    bool destination_existed;
+    bool destination_backed_up;
+    bool source_moved;
+} AssetTransferOperation;
+
+struct PlayActivityAssetTransfer {
+    AssetTransferOperation *operations;
+    size_t operation_count;
+    size_t operation_capacity;
+    bool applied;
+    bool finalized;
+};
+
+static void free_asset_transfer_operations(
+    AssetTransferOperation *operations,
+    size_t operation_count
+)
+{
+    if (operations == NULL)
+        return;
+
+    for (size_t index = 0; index < operation_count; index++) {
+        free(operations[index].source_path);
+        free(operations[index].destination_path);
+        free(operations[index].backup_path);
+    }
+
+    free(operations);
+}
+
+static bool append_asset_transfer_operation(
+    PlayActivityAssetTransfer *transfer,
+    const char *source_path,
+    const char *destination_path,
+    bool destination_existed
+)
+{
+    if (transfer == NULL ||
+        source_path == NULL ||
+        destination_path == NULL) {
+        return false;
+    }
+
+    if (transfer->operation_count ==
+        transfer->operation_capacity) {
+        size_t new_capacity =
+            transfer->operation_capacity == 0
+                ? 8
+                : transfer->operation_capacity * 2;
+
+        if (new_capacity < transfer->operation_capacity ||
+            new_capacity >
+                SIZE_MAX / sizeof(*transfer->operations)) {
+            return false;
+        }
+
+        AssetTransferOperation *resized = realloc(
+            transfer->operations,
+            new_capacity * sizeof(*transfer->operations)
+        );
+
+        if (resized == NULL)
+            return false;
+
+        transfer->operations = resized;
+        transfer->operation_capacity = new_capacity;
+    }
+
+    AssetTransferOperation *operation =
+        &transfer->operations[transfer->operation_count];
+
+    memset(operation, 0, sizeof(*operation));
+
+    operation->source_path = strdup(source_path);
+    operation->destination_path =
+        strdup(destination_path);
+    operation->destination_existed =
+        destination_existed;
+
+    if (operation->source_path == NULL ||
+        operation->destination_path == NULL) {
+        free(operation->source_path);
+        free(operation->destination_path);
+        memset(operation, 0, sizeof(*operation));
+        return false;
+    }
+
+    transfer->operation_count++;
+    return true;
+}
+
+static bool collect_asset_transfer_directory(
+    PlayActivityAssetTransfer *transfer,
+    const char *directory_path,
+    const char *old_basename,
+    const char *new_basename,
+    bool replace_existing,
+    PlayActivityAssetTransferResult *result
+)
+{
+    DIR *directory = opendir(directory_path);
+
+    if (directory == NULL) {
+        if (errno == ENOENT) {
+            result->missing++;
+            return true;
+        }
+
+        result->failed++;
+        return false;
+    }
+
+    bool found_source = false;
+    struct dirent *entry = NULL;
+
+    while ((entry = readdir(directory)) != NULL) {
+        if (strcmp(entry->d_name, ".") == 0 ||
+            strcmp(entry->d_name, "..") == 0 ||
+            !asset_family_matches(
+                entry->d_name,
+                old_basename
+            )) {
+            continue;
+        }
+
+        const char *suffix =
+            entry->d_name + strlen(old_basename);
+
+        char source_path[PATH_MAX];
+        char destination_path[PATH_MAX];
+
+        int source_written = snprintf(
+            source_path,
+            sizeof(source_path),
+            "%s/%s",
+            directory_path,
+            entry->d_name
+        );
+
+        int destination_written = snprintf(
+            destination_path,
+            sizeof(destination_path),
+            "%s/%s%s",
+            directory_path,
+            new_basename,
+            suffix
+        );
+
+        if (source_written < 0 ||
+            destination_written < 0 ||
+            (size_t)source_written >= sizeof(source_path) ||
+            (size_t)destination_written >=
+                sizeof(destination_path)) {
+            result->failed++;
+            continue;
+        }
+
+        struct stat source_status;
+
+        if (lstat(source_path, &source_status) != 0) {
+            result->failed++;
+            continue;
+        }
+
+        if (!S_ISREG(source_status.st_mode))
+            continue;
+
+        found_source = true;
+
+        bool destination_existed =
+            exists(destination_path);
+
+        if (destination_existed) {
+            struct stat destination_status;
+
+            if (lstat(
+                    destination_path,
+                    &destination_status
+                ) != 0 ||
+                !S_ISREG(destination_status.st_mode) ||
+                !replace_existing) {
+                result->blocked++;
+                continue;
+            }
+        }
+
+        if (!append_asset_transfer_operation(
+                transfer,
+                source_path,
+                destination_path,
+                destination_existed)) {
+            result->failed++;
+        }
+    }
+
+    closedir(directory);
+
+    if (!found_source)
+        result->missing++;
+
+    return result->blocked == 0 &&
+           result->failed == 0;
+}
+
+static char *create_asset_backup_path(
+    const char *destination_path,
+    size_t operation_index
+)
+{
+    char backup_path[PATH_MAX];
+
+    for (unsigned int attempt = 0;
+         attempt < 1000;
+         attempt++) {
+        int written = snprintf(
+            backup_path,
+            sizeof(backup_path),
+            "%s.activity-transfer-%ld-%zu-%u",
+            destination_path,
+            (long)getpid(),
+            operation_index,
+            attempt
+        );
+
+        if (written < 0 ||
+            (size_t)written >= sizeof(backup_path)) {
+            return NULL;
+        }
+
+        if (!exists(backup_path))
+            return strdup(backup_path);
+    }
+
+    return NULL;
+}
+
+PlayActivityAssetTransfer *
+play_activity_asset_transfer_prepare(
+    const char *saves_directory,
+    const char *states_directory,
+    const char *old_rom_path,
+    const char *new_rom_path,
+    bool replace_existing,
+    PlayActivityAssetTransferResult *result_out
+)
+{
+    if (result_out != NULL)
+        memset(result_out, 0, sizeof(*result_out));
+
+    if (saves_directory == NULL ||
+        states_directory == NULL ||
+        old_rom_path == NULL ||
+        new_rom_path == NULL ||
+        result_out == NULL ||
+        saves_directory[0] == '\0' ||
+        states_directory[0] == '\0' ||
+        old_rom_path[0] == '\0' ||
+        new_rom_path[0] == '\0') {
+        return NULL;
+    }
+
+    const char *old_filename =
+        file_basename(old_rom_path);
+    const char *new_filename =
+        file_basename(new_rom_path);
+
+    char *old_basename =
+        file_removeExtension(old_filename);
+    char *new_basename =
+        file_removeExtension(new_filename);
+
+    if (old_basename == NULL ||
+        new_basename == NULL ||
+        old_basename[0] == '\0' ||
+        new_basename[0] == '\0') {
+        free(old_basename);
+        free(new_basename);
+        return NULL;
+    }
+
+    PlayActivityAssetTransfer *transfer =
+        calloc(1, sizeof(*transfer));
+
+    if (transfer == NULL) {
+        free(old_basename);
+        free(new_basename);
+        return NULL;
+    }
+
+    bool prepared = true;
+
+    if (strcmp(old_basename, new_basename) != 0) {
+        bool saves_prepared =
+            collect_asset_transfer_directory(
+                transfer,
+                saves_directory,
+                old_basename,
+                new_basename,
+                replace_existing,
+                result_out
+            );
+
+        bool states_prepared =
+            collect_asset_transfer_directory(
+                transfer,
+                states_directory,
+                old_basename,
+                new_basename,
+                replace_existing,
+                result_out
+            );
+
+        prepared =
+            saves_prepared &&
+            states_prepared;
+    }
+
+    free(old_basename);
+    free(new_basename);
+
+    if (!prepared) {
+        play_activity_asset_transfer_free(transfer);
+        return NULL;
+    }
+
+    return transfer;
+}
+
+bool play_activity_asset_transfer_rollback(
+    PlayActivityAssetTransfer *transfer
+)
+{
+    if (transfer == NULL || transfer->finalized)
+        return false;
+
+    bool success = true;
+
+    for (size_t index = transfer->operation_count;
+         index > 0;
+         index--) {
+        AssetTransferOperation *operation =
+            &transfer->operations[index - 1];
+
+        if (operation->source_moved) {
+            if (rename(
+                    operation->destination_path,
+                    operation->source_path) == 0) {
+                operation->source_moved = false;
+            }
+            else {
+                success = false;
+            }
+        }
+
+        if (operation->destination_backed_up) {
+            if (rename(
+                    operation->backup_path,
+                    operation->destination_path) == 0) {
+                operation->destination_backed_up = false;
+            }
+            else {
+                success = false;
+            }
+        }
+    }
+
+    if (success) {
+        transfer->applied = false;
+        transfer->finalized = true;
+    }
+
+    return success;
+}
+
+bool play_activity_asset_transfer_apply(
+    PlayActivityAssetTransfer *transfer,
+    PlayActivityAssetTransferResult *result_out
+)
+{
+    if (result_out != NULL)
+        memset(result_out, 0, sizeof(*result_out));
+
+    if (transfer == NULL ||
+        result_out == NULL ||
+        transfer->applied ||
+        transfer->finalized) {
+        return false;
+    }
+
+    for (size_t index = 0;
+         index < transfer->operation_count;
+         index++) {
+        AssetTransferOperation *operation =
+            &transfer->operations[index];
+
+        if (operation->destination_existed) {
+            operation->backup_path =
+                create_asset_backup_path(
+                    operation->destination_path,
+                    index
+                );
+
+            if (operation->backup_path == NULL ||
+                rename(
+                    operation->destination_path,
+                    operation->backup_path) != 0) {
+                result_out->failed++;
+                play_activity_asset_transfer_rollback(
+                    transfer
+                );
+                return false;
+            }
+
+            operation->destination_backed_up = true;
+        }
+
+        if (rename(
+                operation->source_path,
+                operation->destination_path) != 0) {
+            result_out->failed++;
+            play_activity_asset_transfer_rollback(
+                transfer
+            );
+            return false;
+        }
+
+        operation->source_moved = true;
+        result_out->moved++;
+
+        if (operation->destination_existed)
+            result_out->replaced++;
+    }
+
+    transfer->applied = true;
+    return true;
+}
+
+bool play_activity_asset_transfer_commit(
+    PlayActivityAssetTransfer *transfer
+)
+{
+    if (transfer == NULL ||
+        !transfer->applied ||
+        transfer->finalized) {
+        return false;
+    }
+
+    /*
+     * The transfer becomes irreversible here. Backup deletion is cleanup,
+     * not part of the transaction: if one unlink succeeds and a later one
+     * fails, pretending the commit failed would make rollback unsafe.
+     */
+    transfer->finalized = true;
+
+    for (size_t index = 0;
+         index < transfer->operation_count;
+         index++) {
+        AssetTransferOperation *operation =
+            &transfer->operations[index];
+
+        if (operation->destination_backed_up) {
+            if (unlink(operation->backup_path) == 0)
+                operation->destination_backed_up = false;
+        }
+    }
+
+    return true;
+}
+
+void play_activity_asset_transfer_free(
+    PlayActivityAssetTransfer *transfer
+)
+{
+    if (transfer == NULL)
+        return;
+
+    free_asset_transfer_operations(
+        transfer->operations,
+        transfer->operation_count
+    );
+
+    free(transfer);
 }

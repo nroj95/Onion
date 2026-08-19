@@ -37,6 +37,27 @@ static bool write_text_file(
     return written;
 }
 
+static bool text_file_matches(
+    const char *path,
+    const char *expected
+)
+{
+    FILE *file = fopen(path, "r");
+
+    if (file == NULL)
+        return false;
+
+    char contents[128] = "";
+
+    bool read_ok =
+        fgets(contents, sizeof(contents), file) != NULL;
+
+    fclose(file);
+
+    return read_ok &&
+           strcmp(contents, expected) == 0;
+}
+
 void test_asset_migration(void)
 {
     char temporary_directory[] =
@@ -363,6 +384,236 @@ void test_asset_migration(void)
         "missing asset family is safe"
     );
 
+    char states_path[512];
+
+    snprintf(
+        states_path,
+        sizeof(states_path),
+        "%s/states",
+        temporary_directory
+    );
+
+    check_condition(
+        mkdir(states_path, 0700) == 0,
+        "create transactional state fixture directory"
+    );
+
+    char transaction_save_source[4096];
+    char transaction_save_destination[4096];
+    char transaction_state_source[4096];
+    char transaction_state_destination[4096];
+
+    snprintf(
+        transaction_save_source,
+        sizeof(transaction_save_source),
+        "%s/source.srm",
+        saves_path
+    );
+    snprintf(
+        transaction_save_destination,
+        sizeof(transaction_save_destination),
+        "%s/destination.srm",
+        saves_path
+    );
+    snprintf(
+        transaction_state_source,
+        sizeof(transaction_state_source),
+        "%s/source.state.auto",
+        states_path
+    );
+    snprintf(
+        transaction_state_destination,
+        sizeof(transaction_state_destination),
+        "%s/destination.state.auto",
+        states_path
+    );
+
+    check_condition(
+        write_text_file(
+            transaction_save_source,
+            "source save"
+        ) &&
+        write_text_file(
+            transaction_save_destination,
+            "destination save"
+        ) &&
+        write_text_file(
+            transaction_state_source,
+            "source state"
+        ) &&
+        write_text_file(
+            transaction_state_destination,
+            "destination state"
+        ),
+        "write transactional asset fixtures"
+    );
+
+    PlayActivityAssetTransferResult transfer_result;
+
+    PlayActivityAssetTransfer *blocked_transfer =
+        play_activity_asset_transfer_prepare(
+            saves_path,
+            states_path,
+            "/Roms/GB/source.gb",
+            "/Roms/GB/destination.gb",
+            false,
+            &transfer_result
+        );
+
+    check_condition(
+        blocked_transfer == NULL &&
+        transfer_result.blocked == 2 &&
+        access(transaction_save_source, F_OK) == 0 &&
+        access(transaction_save_destination, F_OK) == 0 &&
+        access(transaction_state_source, F_OK) == 0 &&
+        access(transaction_state_destination, F_OK) == 0,
+        "transaction preflight blocks replacement without mutation"
+    );
+
+    PlayActivityAssetTransfer *rollback_transfer =
+        play_activity_asset_transfer_prepare(
+            saves_path,
+            states_path,
+            "/Roms/GB/source.gb",
+            "/Roms/GB/destination.gb",
+            true,
+            &transfer_result
+        );
+
+    check_condition(
+        rollback_transfer != NULL,
+        "prepare replacement asset transaction"
+    );
+
+    check_condition(
+        rollback_transfer != NULL &&
+        play_activity_asset_transfer_apply(
+            rollback_transfer,
+            &transfer_result
+        ) &&
+        transfer_result.moved == 2 &&
+        transfer_result.replaced == 2,
+        "apply save and state transaction together"
+    );
+
+    check_condition(
+        rollback_transfer != NULL &&
+        play_activity_asset_transfer_rollback(
+            rollback_transfer
+        ) &&
+        access(transaction_save_source, F_OK) == 0 &&
+        access(transaction_save_destination, F_OK) == 0 &&
+        access(transaction_state_source, F_OK) == 0 &&
+        access(transaction_state_destination, F_OK) == 0,
+        "rollback restores source and destination families"
+    );
+
+    play_activity_asset_transfer_free(
+        rollback_transfer
+    );
+
+    PlayActivityAssetTransfer *failure_transfer =
+        play_activity_asset_transfer_prepare(
+            saves_path,
+            states_path,
+            "/Roms/GB/source.gb",
+            "/Roms/GB/destination.gb",
+            true,
+            &transfer_result
+        );
+
+    check_condition(
+        failure_transfer != NULL,
+        "prepare cross-directory rollback transaction"
+    );
+
+    char hidden_states_path[512];
+
+    snprintf(
+        hidden_states_path,
+        sizeof(hidden_states_path),
+        "%s/states-hidden",
+        temporary_directory
+    );
+
+    bool states_hidden =
+        rename(states_path, hidden_states_path) == 0;
+
+    check_condition(
+        states_hidden,
+        "hide state directory after transaction preflight"
+    );
+
+    bool failure_rolled_back =
+        failure_transfer != NULL &&
+        states_hidden &&
+        !play_activity_asset_transfer_apply(
+            failure_transfer,
+            &transfer_result
+        );
+
+    if (states_hidden)
+        rename(hidden_states_path, states_path);
+
+    check_condition(
+        failure_rolled_back &&
+        text_file_matches(
+            transaction_save_source,
+            "source save"
+        ) &&
+        text_file_matches(
+            transaction_save_destination,
+            "destination save"
+        ) &&
+        text_file_matches(
+            transaction_state_source,
+            "source state"
+        ) &&
+        text_file_matches(
+            transaction_state_destination,
+            "destination state"
+        ),
+        "second-directory failure rolls back complete transaction"
+    );
+
+    play_activity_asset_transfer_free(
+        failure_transfer
+    );
+
+    PlayActivityAssetTransfer *commit_transfer =
+        play_activity_asset_transfer_prepare(
+            saves_path,
+            states_path,
+            "/Roms/GB/source.gb",
+            "/Roms/GB/destination.gb",
+            true,
+            &transfer_result
+        );
+
+    check_condition(
+        commit_transfer != NULL &&
+        play_activity_asset_transfer_apply(
+            commit_transfer,
+            &transfer_result
+        ) &&
+        play_activity_asset_transfer_commit(
+            commit_transfer
+        ),
+        "commit replacement asset transaction"
+    );
+
+    check_condition(
+        access(transaction_save_source, F_OK) != 0 &&
+        access(transaction_save_destination, F_OK) == 0 &&
+        access(transaction_state_source, F_OK) != 0 &&
+        access(transaction_state_destination, F_OK) == 0,
+        "committed transaction keeps new asset names"
+    );
+
+    play_activity_asset_transfer_free(
+        commit_transfer
+    );
+
     unlink(info_path);
     unlink(new_save);
     unlink(new_state);
@@ -373,8 +624,13 @@ void test_asset_migration(void)
     unlink(partial_source_state);
     unlink(partial_destination_save);
     unlink(partial_destination_state);
+    unlink(transaction_save_source);
+    unlink(transaction_save_destination);
+    unlink(transaction_state_source);
+    unlink(transaction_state_destination);
     rmdir(directory_source);
     rmdir(directory_destination);
+    rmdir(states_path);
     rmdir(saves_path);
     rmdir(temporary_directory);
 }
