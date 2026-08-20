@@ -115,16 +115,15 @@ void menu_datetime(void *_)
         if (DEVICE_ID == MIYOO354) {
             list_addItemWithInfoNote(&_menu_date_time,
                                      (ListItem){
-                                         .label = "Wait for sync on startup",
+                                     .label = "Wait for sync before game",
                                          .item_type = TOGGLE,
                                          .disabled = !network_state.ntp,
                                          .value = (int)network_state.ntp_wait,
                                          .action = network_setNtpWaitState},
-                                     "Wait for date and time synchronization\n"
-                                     "on system startup."
+                                     "Wait for startup date and time sync\n"
+                                     "before launching a game."
                                      " \n"
-                                     "Ensures that time is synced before a game\n"
-                                     "is launched.");
+                                     "MainUI startup is not delayed.");
             list_addItemWithInfoNote(&_menu_date_time,
                                      (ListItem){
                                          .label = "Enable Wi-Fi temporarily",
