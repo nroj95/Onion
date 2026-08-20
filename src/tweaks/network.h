@@ -3,6 +3,7 @@
 
 #include <SDL/SDL_image.h>
 #include <ctype.h>
+#include <limits.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -22,9 +23,16 @@
 #include "utils/process.h"
 
 #include "./appstate.h"
+#include "./info_dialog.h"
+#include "./wifi_networks.h"
 
 #define NET_SCRIPT_PATH "/mnt/SDCARD/.tmp_update/script/network"
 #define SMBD_CONFIG_PATH "/mnt/SDCARD/.tmp_update/config/smb.conf"
+
+static char wifi_selected_network_ssid[STR_MAX] = {0};
+static int wifi_selected_network_index = -1;
+
+void menu_wifiSavedNetworks(void *pt);
 
 static struct network_s {
     bool smbd;
@@ -589,16 +597,707 @@ void menu_vnc(void *pt)
     header_changed = true;
 }
 
+void network_applySavedNetworks(void *pt)
+{
+    (void)pt;
+
+    if (
+        !showConfirmDialog(
+            "Apply saved networks?",
+            "This makes your saved networks\n"
+            "the active WiFi configuration.\n"
+            "\n"
+            "Only networks saved here will remain\n"
+            "after applying this list.")) {
+        return;
+    }
+
+    if (apply_saved_networks()) {
+        __showInfoDialog(
+            "Saved networks applied",
+            "Your saved networks are now active.");
+    }
+    else {
+        __showInfoDialog(
+            "Apply failed",
+            "Saved networks could not be applied.");
+    }
+
+    list_changed = true;
+}
+
+void network_saveCurrentNetwork(void *pt)
+{
+    (void)pt;
+
+    char ssid[STR_MAX] = {0};
+    char message[STR_MAX];
+
+    SaveCurrentNetworkResult result =
+        save_current_network(
+            ssid,
+            sizeof(ssid));
+
+    if (
+        result ==
+        SAVE_CURRENT_NETWORK_SUCCESS) {
+        snprintf(
+            message,
+            sizeof(message),
+            "\"%.*s\" was added to your saved networks.",
+            200,
+            ssid);
+
+        __showInfoDialog(
+            "Network saved",
+            message);
+    }
+    else if (
+        result ==
+        SAVE_CURRENT_NETWORK_ALREADY_SAVED) {
+        snprintf(
+            message,
+            sizeof(message),
+            "\"%.*s\" is already in your saved networks.",
+            200,
+            ssid);
+
+        __showInfoDialog(
+            "Nothing changed",
+            message);
+    }
+    else if (
+        result ==
+        SAVE_CURRENT_NETWORK_NOT_CONNECTED) {
+        __showInfoDialog(
+            "No network connected",
+            "Connect to a network before saving it.");
+    }
+    else if (
+        result ==
+        SAVE_CURRENT_NETWORK_AMBIGUOUS) {
+        __showInfoDialog(
+            "Multiple matching profiles",
+            "More than one active profile uses this SSID.\n"
+            "The connected profile cannot be identified safely.");
+    }
+    else {
+        __showInfoDialog(
+            "Save failed",
+            "The current network could not be saved.");
+    }
+
+    list_changed = true;
+}
+
+static bool network_editPriorityDialog(
+    const char *ssid,
+    int current_priority,
+    int *new_priority)
+{
+    bool confirmed = false;
+    bool dialog_closed = false;
+    SDLKey changed_key = SDLK_UNKNOWN;
+
+    int edited_priority =
+        current_priority;
+
+    char message[STR_MAX];
+
+    SDL_Surface *background =
+        SDL_CreateRGBSurface(
+            SDL_SWSURFACE,
+            screen->w,
+            screen->h,
+            32,
+            0,
+            0,
+            0,
+            0);
+
+    if (background == NULL) {
+        return false;
+    }
+
+    SDL_BlitSurface(
+        screen,
+        NULL,
+        background,
+        NULL);
+
+    keys_enabled = false;
+
+    while (!dialog_closed) {
+        SDL_BlitSurface(
+            background,
+            NULL,
+            screen,
+            NULL);
+
+        snprintf(
+            message,
+            sizeof(message),
+            "Priority: %d\n"
+            "Higher numbers connect first\n"
+            "\n"
+            "Left / Right to adjust",
+            edited_priority);
+
+        theme_renderDialog(
+            screen,
+            ssid,
+            message,
+            true);
+
+        SDL_BlitSurface(
+            screen,
+            NULL,
+            video,
+            NULL);
+
+        SDL_Flip(video);
+
+        if (
+            updateKeystate(
+                keystate,
+                &dialog_closed,
+                true,
+                &changed_key)) {
+            if (
+                keystate[SW_BTN_LEFT] >=
+                PRESSED) {
+                edited_priority -= 10;
+
+                if (
+                    edited_priority <
+                    MIN_NETWORK_PRIORITY) {
+                    edited_priority =
+                        MIN_NETWORK_PRIORITY;
+                }
+
+                sound_change();
+            }
+            else if (
+                keystate[SW_BTN_RIGHT] >=
+                PRESSED) {
+                edited_priority += 10;
+
+                if (
+                    edited_priority >
+                    MAX_NETWORK_PRIORITY) {
+                    edited_priority =
+                        MAX_NETWORK_PRIORITY;
+                }
+
+                sound_change();
+            }
+            else if (
+                changed_key == SW_BTN_A &&
+                keystate[SW_BTN_A] == PRESSED) {
+                confirmed = true;
+                dialog_closed = true;
+            }
+            else if (
+                changed_key == SW_BTN_B &&
+                keystate[SW_BTN_B] == PRESSED) {
+                dialog_closed = true;
+            }
+        }
+
+        SDL_Delay(8);
+    }
+
+    keys_enabled = true;
+
+    SDL_BlitSurface(
+        background,
+        NULL,
+        screen,
+        NULL);
+
+    SDL_FreeSurface(background);
+
+    if (
+        confirmed &&
+        new_priority != NULL) {
+        *new_priority =
+            edited_priority;
+    }
+
+    all_changed = true;
+    list_changed = true;
+
+    return confirmed;
+}
+
+static bool network_confirmRemoveSavedNetwork(const char *ssid)
+{
+    char message[STR_MAX];
+
+    snprintf(
+        message,
+        sizeof(message),
+        "Remove \"%.*s\" from your\n"
+        "saved network list?",
+        120,
+        ssid);
+
+    return showConfirmDialog(
+        "Remove saved network?",
+        message);
+}
+
+static void network_refreshPriorityDescriptions(
+    int priority)
+{
+    snprintf(
+        _menu_wifi_network_actions
+            .items[0]
+            .description,
+        STR_MAX,
+        "Current priority: %d | Higher connects first",
+        priority);
+
+    if (
+        wifi_selected_network_index >= 0 &&
+        wifi_selected_network_index <
+            _menu_wifi_saved_networks.item_count) {
+        snprintf(
+            _menu_wifi_saved_networks
+                .items[wifi_selected_network_index]
+                .description,
+            STR_MAX,
+            "Connection priority: %d",
+            priority);
+    }
+}
+
+void network_changeSelectedPriority(void *pt)
+{
+    (void)pt;
+
+    int current_priority = 0;
+    int new_priority = 0;
+
+    if (
+        !get_saved_network_priority(
+            wifi_selected_network_index,
+            &current_priority)) {
+        __showInfoDialog(
+            "Priority unavailable",
+            "The current priority could not be read.");
+
+        list_changed = true;
+        return;
+    }
+
+    if (
+        !network_editPriorityDialog(
+            wifi_selected_network_ssid,
+            current_priority,
+            &new_priority)) {
+        return;
+    }
+
+    if (new_priority == current_priority) {
+        __showInfoDialog(
+            "Nothing changed",
+            "The network priority was not changed.");
+
+        return;
+    }
+
+    if (
+        !update_saved_network_priority(
+            wifi_selected_network_index,
+            new_priority)) {
+        __showInfoDialog(
+            "Priority update failed",
+            "The saved network priority could not be updated.");
+
+        list_changed = true;
+        return;
+    }
+
+    network_refreshPriorityDescriptions(
+        new_priority);
+
+    __showInfoDialog(
+        "Priority updated",
+        "Apply saved networks to use the new priority.");
+
+    list_changed = true;
+}
+
+void network_removeSelectedNetwork(void *pt)
+{
+    (void)pt;
+
+    if (
+        !network_confirmRemoveSavedNetwork(
+            wifi_selected_network_ssid)) {
+        return;
+    }
+
+    if (
+        !delete_saved_network(
+            wifi_selected_network_index)) {
+        __showInfoDialog(
+            "Remove failed",
+            "The saved network could not be removed.");
+
+        list_changed = true;
+        return;
+    }
+
+    wifi_selected_network_ssid[0] = '\0';
+    wifi_selected_network_index = -1;
+
+    __showInfoDialog(
+        "Network removed",
+        "Apply saved networks to use the revised list.");
+
+    /*
+     * Replace the action submenu with a newly built saved-network submenu.
+     * The current stack is:
+     * network -> wi-fi -> saved networks -> network actions.
+     */
+    if (menu_level >= 2) {
+        menu_level -= 2;
+    }
+
+    menu_wifiSavedNetworks(NULL);
+
+    all_changed = true;
+    list_changed = true;
+}
+
+void menu_wifiNetworkActions(void *pt)
+{
+    ListItem *selected_item =
+        (ListItem *)pt;
+
+    if (selected_item == NULL) {
+        return;
+    }
+
+    char *end_pointer = NULL;
+
+    long parsed_index = strtol(
+        selected_item->payload,
+        &end_pointer,
+        10);
+
+    if (
+        end_pointer == selected_item->payload ||
+        *end_pointer != '\0' ||
+        parsed_index < 0 ||
+        parsed_index > INT_MAX) {
+        __showInfoDialog(
+            "Network unavailable",
+            "The selected network could not be opened.");
+
+        list_changed = true;
+        return;
+    }
+
+    WifiConfig *saved_config =
+        calloc(1, sizeof(WifiConfig));
+
+    if (
+        saved_config == NULL ||
+        !load_wifi_config(
+            SAVED_CONFIG_PATH,
+            saved_config) ||
+        parsed_index >= saved_config->network_count) {
+        free(saved_config);
+
+        __showInfoDialog(
+            "Network unavailable",
+            "The selected network could not be opened.");
+
+        list_changed = true;
+        return;
+    }
+
+    wifi_selected_network_index =
+        (int)parsed_index;
+
+    const WifiNetwork *network =
+        &saved_config->networks[wifi_selected_network_index];
+
+    strncpy(
+        wifi_selected_network_ssid,
+        network->ssid,
+        sizeof(wifi_selected_network_ssid) - 1);
+
+    wifi_selected_network_ssid[sizeof(wifi_selected_network_ssid) - 1] = '\0';
+
+    int current_priority =
+        network->has_priority
+            ? network->priority
+            : 0;
+
+    free(saved_config);
+
+    list_free(&_menu_wifi_network_actions);
+
+    _menu_wifi_network_actions =
+        list_create(
+            3,
+            LIST_SMALL);
+
+    strncpy(
+        _menu_wifi_network_actions.title,
+        wifi_selected_network_ssid,
+        STR_MAX - 1);
+
+    _menu_wifi_network_actions.title[STR_MAX - 1] = '\0';
+
+    char priority_info[STR_MAX];
+
+    snprintf(
+        priority_info,
+        sizeof(priority_info),
+        "Current priority: %d | Higher connects first",
+        current_priority);
+
+    list_addItem(
+        &_menu_wifi_network_actions,
+        (ListItem){
+            .label = "Higher priority connects first",
+            .disabled = true,
+            .action = NULL});
+
+    list_addItemWithInfoNote(
+        &_menu_wifi_network_actions,
+        (ListItem){
+            .label = "Connection priority",
+            .action = network_changeSelectedPriority},
+        priority_info);
+
+    list_addItemWithInfoNote(
+        &_menu_wifi_network_actions,
+        (ListItem){
+            .label = "Remove network",
+            .action = network_removeSelectedNetwork},
+        "Remove this profile from your saved\n"
+        "network list.");
+
+    menu_stack[++menu_level] =
+        &_menu_wifi_network_actions;
+
+    header_changed = true;
+    list_changed = true;
+}
+
+void menu_wifiSavedNetworks(void *pt)
+{
+    (void)pt;
+
+    WifiConfig *saved_config =
+        calloc(1, sizeof(WifiConfig));
+
+    char connected_ssid[STR_MAX] = {0};
+
+    get_connected_network_ssid(
+        connected_ssid,
+        sizeof(connected_ssid));
+
+    list_free(
+        &_menu_wifi_saved_networks);
+
+    if (saved_config == NULL) {
+        _menu_wifi_saved_networks =
+            list_create(
+                1,
+                LIST_LARGE);
+
+        strcpy(
+            _menu_wifi_saved_networks.title,
+            "Saved networks");
+
+        list_addItem(
+            &_menu_wifi_saved_networks,
+            (ListItem){
+                .label =
+                    "Unable to load networks",
+                .description =
+                    "Insufficient memory",
+                .disabled = true,
+                .action = NULL});
+
+        menu_stack[++menu_level] =
+            &_menu_wifi_saved_networks;
+
+        header_changed = true;
+        list_changed = true;
+        return;
+    }
+
+    bool config_loaded =
+        load_wifi_config(
+            SAVED_CONFIG_PATH,
+            saved_config);
+
+    int item_count =
+        config_loaded &&
+                saved_config->network_count > 0
+            ? saved_config->network_count
+            : 1;
+
+    _menu_wifi_saved_networks =
+        list_create(
+            item_count,
+            LIST_LARGE);
+
+    strcpy(
+        _menu_wifi_saved_networks.title,
+        "Saved networks");
+
+    if (!config_loaded) {
+        ListItem status_item = {
+            .disabled = true,
+            .action = NULL};
+
+        if (
+            access(
+                SAVED_CONFIG_PATH,
+                F_OK) == 0) {
+            strncpy(
+                status_item.label,
+                "Saved list could not be read",
+                STR_MAX - 1);
+
+            strncpy(
+                status_item.description,
+                "The saved configuration is invalid",
+                STR_MAX - 1);
+        }
+        else {
+            strncpy(
+                status_item.label,
+                "No saved networks",
+                STR_MAX - 1);
+
+            strncpy(
+                status_item.description,
+                "Save the current network first",
+                STR_MAX - 1);
+        }
+
+        status_item.label[STR_MAX - 1] = '\0';
+
+        status_item.description[STR_MAX - 1] = '\0';
+
+        list_addItem(
+            &_menu_wifi_saved_networks,
+            status_item);
+    }
+    else if (
+        saved_config->network_count == 0) {
+        list_addItem(
+            &_menu_wifi_saved_networks,
+            (ListItem){
+                .label = "No saved networks",
+                .description =
+                    "Save the current network first",
+                .disabled = true,
+                .action = NULL});
+    }
+    else {
+        for (
+            int network_index = 0;
+            network_index <
+            saved_config->network_count;
+            network_index++) {
+            const WifiNetwork *network =
+                &saved_config->networks[network_index];
+
+            ListItem network_item = {0};
+
+            int priority =
+                network->has_priority
+                    ? network->priority
+                    : 0;
+
+            bool is_connected =
+                connected_ssid[0] != '\0' &&
+                strcmp(
+                    connected_ssid,
+                    network->ssid) == 0 &&
+                count_networks_with_ssid(
+                    saved_config,
+                    connected_ssid) == 1;
+
+            strncpy(
+                network_item.label,
+                network->ssid,
+                STR_MAX - 1);
+
+            network_item.label[STR_MAX - 1] = '\0';
+
+            snprintf(
+                network_item.description,
+                sizeof(
+                    network_item.description),
+                is_connected
+                    ? "Priority %d | Connected"
+                    : "Priority %d",
+                priority);
+
+            snprintf(
+                network_item.payload,
+                sizeof(network_item.payload),
+                "%d",
+                network_index);
+
+            network_item.action =
+                menu_wifiNetworkActions;
+
+            list_addItem(
+                &_menu_wifi_saved_networks,
+                network_item);
+        }
+    }
+
+    free(saved_config);
+
+    menu_stack[++menu_level] =
+        &_menu_wifi_saved_networks;
+
+    header_changed = true;
+    list_changed = true;
+}
+
 void menu_wifi(void *_)
 {
     if (!_menu_wifi._created) {
-        _menu_wifi = list_create(3, LIST_SMALL);
+        _menu_wifi = list_create(6, LIST_SMALL);
         strcpy(_menu_wifi.title, "WiFi");
         list_addItem(&_menu_wifi,
                      (ListItem){
                          .label = "IP address: N/A",
                          .disabled = true,
                          .action = NULL});
+        list_addItemWithInfoNote(&_menu_wifi,
+                                 (ListItem){
+                                     .label = "Save current network",
+                                     .action = network_saveCurrentNetwork},
+                                 "Add the currently connected network to\n"
+                                 "your persistent priority network list.");
+        list_addItemWithInfoNote(&_menu_wifi,
+                                 (ListItem){
+                                     .label = "Apply saved networks",
+                                     .action = network_applySavedNetworks},
+                                 "Make your saved networks the active WiFi\n"
+                                 "configuration and use their priorities.");
+        list_addItemWithInfoNote(&_menu_wifi,
+                                 (ListItem){
+                                     .label = "Saved networks...",
+                                     .action = menu_wifiSavedNetworks},
+                                 "View saved networks and their current\n"
+                                 "connection priorities.");
         list_addItemWithInfoNote(&_menu_wifi,
                                  (ListItem){
                                      .label = "WiFi Hotspot",
@@ -644,7 +1343,7 @@ void menu_network(void *_)
                          .action = NULL});
         list_addItem(&_menu_network,
                      (ListItem){
-                         .label = "WiFi: Hotspot/WPS...",
+                         .label = "WiFi: Advanced...",
                          .action = menu_wifi});
         list_addItemWithInfoNote(&_menu_network,
                                  (ListItem){

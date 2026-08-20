@@ -457,11 +457,10 @@ check_hotspotstate() {
             log "Hotspot: Killed"
             pkill -9 hostapd
             pkill -9 dnsmasq
-            ifconfig wlan0 up
             ifconfig wlan1 down
-            killall -9 udhcpc
-            udhcpc -i wlan0 -s /etc/init.d/udhcpc.script &
-            check_wifi
+            pkill -9 wpa_supplicant
+            pkill -9 udhcpc
+            wifi_on
         else
             return
         fi
@@ -639,7 +638,7 @@ libpadspblocker() {
             echo "Network Checker: $wpa_pid(WPA) and $udhcpc_pid(UDHCPC) found preloaded with libpadsp.so"
             unset LD_PRELOAD
             killall -9 wpa_supplicant
-            killall -9 udhcpc
+            pkill -9 udhcpc
             $miyoodir/app/wpa_supplicant -B -D nl80211 -iwlan0 -c /appconfigs/wpa_supplicant.conf &
             udhcpc -i wlan0 -s /etc/init.d/udhcpc.script &
             echo "Network Checker: Removing libpadsp.so preload on wpa_supp/udhcpc"
