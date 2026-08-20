@@ -1,25 +1,15 @@
-<p>&nbsp;</p>
-
-# <img alt="Onion" src="https://user-images.githubusercontent.com/44569252/179510333-40793fbc-f2a3-4269-8ab9-569b191d423f.png" width="196px">
-
-*An enhanced operating system for your Miyoo Mini and Mini+, featuring fine-tuned emulation with 100+ built-in emulators, auto-save and resume, a wealth of customization options, and much more. Performant, reliable, and straightforward retro gaming right in your pocket.*
-
-<p>&nbsp;</p>
-
 <p align="center">
-<a href="https://onionui.github.io/docs"><img alt="Getting Started" src="https://user-images.githubusercontent.com/44569252/190487908-0fb16c8e-5ff5-4ee2-921a-0a9427f26587.png"></a>
-<a href="https://onionui.github.io/docs/features"><img alt="Features" src="https://user-images.githubusercontent.com/44569252/190487893-7a4a2287-462a-4d91-a4fc-ace80580653a.png"></a>
-<a href="https://onionui.github.io/docs/faq"><img alt="FAQ" src="https://user-images.githubusercontent.com/44569252/190487922-3d6b8df9-da26-47e8-b397-e4104156ede6.png"></a>
+  <img src="assets/readme/radish.png" alt="radish" width="340">
 </p>
 
 <p align="center">
-<a href="https://github.com/OnionUI/Themes/blob/main/README.md"><img alt="Getting Started" src="https://user-images.githubusercontent.com/44569252/226488035-e321e466-87c3-431f-bc81-52eb6a33c225.png"></a>
-<a href="https://onionui.github.io/docs/ports"><img alt="Features" src="https://user-images.githubusercontent.com/44569252/228782816-cd9c479f-4c46-46ba-abd5-42158d19de7b.png"></a>
+  <em>a small, opinionated cousin of <a href="https://github.com/OnionUI/Onion">onion</a>.</em>
 </p>
 
+---
 
-<p>&nbsp;</p>
+radish currently targets the miyoo mini v4, miyoo mini plus, and miyoo mini flip. keeping the scope small makes the project easier to understand, maintain, and test properly on real hardware.
 
-<p align="center"><a href="https://onionui.github.io/docs/features"><img src="https://user-images.githubusercontent.com/44569252/226488511-297034e2-bb69-4f87-bd18-2ae6ff1e7300.gif"></a></p>
+radish is not intended to replace onion, continue it, or act as an onion v2. it is simply a separate, opinionated fork that will grow in its own direction.
 
-<p align="right"><sub><i>Icons by <a href="https://icons8.com" target="_blank">Icons8</a></i></sub></p>
+this is a solo project that will grow at its own pace. i have some ideas for retroachievements integration and other odd experiments along the way, but nothing is set in stone. testers, bug reports, and useful feedback are always appreciated.
