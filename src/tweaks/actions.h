@@ -492,4 +492,16 @@ const char *action_LaunchKeyboardWrapper(const char *initial_value, const char *
     return result;
 }
 
+void action_launchEmuSort(void *_)
+{
+    FILE *flag_file = fopen("/tmp/launch_emusort", "w");
+    if (flag_file == NULL) {
+        perror("Unable to create EmuSort launch flag");
+        return;
+    }
+
+    fclose(flag_file);
+    quit = true;
+}
+
 #endif // TWEAKS_ACTIONS_H__
