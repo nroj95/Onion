@@ -1,18 +1,797 @@
 #include "./playActivity.h"
+#include "./playActivityAssets.h"
+#include "./playActivityIdentity.h"
+#include "./playActivitySchema.h"
+#include "./playActivityTransfer.h"
 
+#include "system/settings.h"
+
+#include <errno.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+
 
 void printUsage()
 {
     printf("Usage: playActivity list             -> List all play activities\n"
            "       playActivity start [rom_path] -> Launch the counter for this rom\n"
+           "       playActivity candidates [rom_path]\n"
+           "                                      -> List matching transfer candidates\n"
+           "       playActivity transfer_plan [source_rom_id] [rom_path]\n"
+           "                                      -> Validate and preflight an explicit transfer\n"
+           "       playActivity transfer [source_rom_id] [rom_path] [--replace]\n"
+           "                                      -> Perform an explicit transfer\n"
            "       playActivity resume           -> Resume the last rom as a new play activity\n"
            "       playActivity stop [rom_path]  -> Stop the counter for this rom\n"
            "       playActivity stop_all         -> Stop the counter for all roms\n"
            "       playActivity migrate          -> Migrate the old database (prior to Onion 4.2.0) to SQLite\n"
            "       playActivity fix_paths        -> Change all absolute paths to relative paths\n");
+}
+
+static bool ensure_identity_schema(void)
+{
+    play_activity_db_open();
+
+    if (play_activity_db == NULL)
+        return false;
+
+    bool schema_ready =
+        play_activity_identity_schema_ensure(play_activity_db);
+
+    play_activity_db_close();
+
+    return schema_ready;
+}
+
+static bool calculate_content_identity(
+    const char *rom_path,
+    RomContentIdentity *identity,
+    int64_t *modified_time_out
+)
+{
+    RomIdentityContext context;
+
+    if (!rom_identity_context_build(rom_path, &context))
+        return false;
+
+    if (context.kind == ROM_IDENTITY_KIND_ARCADE ||
+        context.kind == ROM_IDENTITY_KIND_UNSUPPORTED) {
+        return false;
+    }
+
+    bool calculated = false;
+
+    switch (context.kind) {
+    case ROM_IDENTITY_KIND_RAW:
+        calculated =
+            rom_identity_calculate_raw(rom_path, identity);
+        break;
+
+    case ROM_IDENTITY_KIND_ZIP:
+        calculated =
+            rom_identity_calculate_zip(rom_path, identity);
+        break;
+
+    case ROM_IDENTITY_KIND_CUE:
+        calculated =
+            rom_identity_calculate_cue(rom_path, identity);
+        break;
+
+    case ROM_IDENTITY_KIND_M3U:
+        calculated =
+            rom_identity_calculate_m3u(rom_path, identity);
+        break;
+
+    case ROM_IDENTITY_KIND_ARCADE:
+    case ROM_IDENTITY_KIND_UNSUPPORTED:
+    default:
+        break;
+    }
+
+    if (!calculated) {
+        fprintf(
+            stderr,
+            "Warning: unable to fingerprint %s rom: %s\n",
+            rom_identity_kind_name(context.kind),
+            rom_path
+        );
+        return false;
+    }
+
+    struct stat file_status;
+
+    if (stat(rom_path, &file_status) != 0) {
+        fprintf(
+            stderr,
+            "Warning: unable to read rom metadata: %s\n",
+            rom_path
+        );
+        return false;
+    }
+
+    *modified_time_out = (int64_t)file_status.st_mtime;
+
+    return true;
+}
+
+static const char *identity_source_type(
+    RomIdentityKind kind
+)
+{
+    switch (kind) {
+    case ROM_IDENTITY_KIND_ZIP:
+        return "zip-stat-v2";
+
+    case ROM_IDENTITY_KIND_CUE:
+        return "cue-stat-v2";
+
+    case ROM_IDENTITY_KIND_M3U:
+        return "m3u-stat-v3";
+
+    default:
+        return NULL;
+    }
+}
+
+static bool calculate_identity_source_signature(
+    RomIdentityKind kind,
+    const char *rom_path,
+    char *signature_out,
+    size_t signature_out_size
+)
+{
+    switch (kind) {
+    case ROM_IDENTITY_KIND_ZIP:
+        return rom_identity_calculate_file_source_signature(
+            rom_path,
+            signature_out,
+            signature_out_size
+        );
+
+    case ROM_IDENTITY_KIND_CUE:
+        return rom_identity_calculate_cue_source_signature(
+            rom_path,
+            signature_out,
+            signature_out_size
+        );
+
+    case ROM_IDENTITY_KIND_M3U:
+        return rom_identity_calculate_m3u_source_signature(
+            rom_path,
+            signature_out,
+            signature_out_size
+        );
+
+    default:
+        return false;
+    }
+}
+
+static void update_rom_for_path(
+    int rom_id,
+    const char *rom_path
+)
+{
+    CacheDBItem *cache_item = cache_db_find(rom_path);
+
+    if (cache_item != NULL) {
+        __db_update_rom_from_cache(rom_id, cache_item);
+        free(cache_item);
+        return;
+    }
+
+    char *rom_name =
+        file_removeExtension(file_basename(rom_path));
+
+    __db_update_rom(
+        rom_id,
+        "",
+        rom_name,
+        rom_path,
+        ""
+    );
+
+    free(rom_name);
+}
+
+static int create_rom_for_path(const char *rom_path)
+{
+    CacheDBItem *cache_item = cache_db_find(rom_path);
+
+    if (cache_item != NULL) {
+        int rom_id = __db_insert_rom_from_cache(cache_item);
+        free(cache_item);
+        return rom_id;
+    }
+
+    char *rom_name =
+        file_removeExtension(file_basename(rom_path));
+
+    int rom_id = __db_insert_rom(
+        "",
+        rom_name,
+        rom_path,
+        ""
+    );
+
+    free(rom_name);
+
+    return rom_id;
+}
+
+static int resolve_rom_for_start(const char *rom_path)
+{
+    RomContentIdentity identity;
+    RomIdentityContext context;
+    char source_signature[17] = "";
+    int64_t modified_time = 0;
+    bool has_identity = false;
+    bool identity_reused = false;
+    bool has_source_signature = false;
+
+    memset(&context, 0, sizeof(context));
+    rom_identity_context_build(rom_path, &context);
+
+    const char *source_type =
+        identity_source_type(context.kind);
+
+    play_activity_db_open();
+
+    if (play_activity_db == NULL)
+        return ROM_NOT_FOUND;
+
+    /*
+     * A rom row belongs to one particular library path. Content identity is
+     * cached for that row but never decides ownership or path reconciliation.
+     */
+    int rom_id = __db_get_rom_id_by_path(rom_path);
+
+    if (rom_id != ROM_NOT_FOUND &&
+        context.kind == ROM_IDENTITY_KIND_RAW) {
+        struct stat file_status;
+
+        if (stat(rom_path, &file_status) == 0) {
+            modified_time = (int64_t)file_status.st_mtime;
+
+            identity_reused =
+                play_activity_identity_load_if_unchanged(
+                    play_activity_db,
+                    rom_id,
+                    (uint64_t)file_status.st_size,
+                    modified_time,
+                    &identity
+                );
+
+            has_identity = identity_reused;
+        }
+    }
+
+    if (rom_id != ROM_NOT_FOUND &&
+        source_type != NULL) {
+        has_source_signature =
+            calculate_identity_source_signature(
+                context.kind,
+                rom_path,
+                source_signature,
+                sizeof(source_signature)
+            );
+
+        if (has_source_signature &&
+            play_activity_identity_source_matches(
+                play_activity_db,
+                rom_id,
+                source_type,
+                source_signature)) {
+            identity_reused =
+                play_activity_identity_load(
+                    play_activity_db,
+                    rom_id,
+                    &identity
+                );
+
+            has_identity = identity_reused;
+        }
+    }
+
+    if (!has_identity) {
+        has_identity = calculate_content_identity(
+            rom_path,
+            &identity,
+            &modified_time
+        );
+    }
+
+    if (source_type != NULL &&
+        !has_source_signature) {
+        has_source_signature =
+            calculate_identity_source_signature(
+                context.kind,
+                rom_path,
+                source_signature,
+                sizeof(source_signature)
+            );
+    }
+
+    if (rom_id != ROM_NOT_FOUND)
+        update_rom_for_path(rom_id, rom_path);
+    else
+        rom_id = create_rom_for_path(rom_path);
+
+    if (rom_id != ROM_NOT_FOUND &&
+        has_identity &&
+        !identity_reused) {
+        if (!play_activity_identity_store(
+                play_activity_db,
+                rom_id,
+                context.system,
+                &identity,
+                modified_time)) {
+            fprintf(
+                stderr,
+                "Warning: unable to store rom identity: %s\n",
+                rom_path
+            );
+        }
+    }
+
+    if (rom_id != ROM_NOT_FOUND) {
+        if (source_type != NULL &&
+            has_identity &&
+            has_source_signature) {
+            if (!play_activity_identity_source_store(
+                    play_activity_db,
+                    rom_id,
+                    source_type,
+                    source_signature)) {
+                fprintf(
+                    stderr,
+                    "Warning: unable to store rom source signature: %s\n",
+                    rom_path
+                );
+            }
+        }
+        else {
+            play_activity_identity_source_delete(
+                play_activity_db,
+                rom_id
+            );
+        }
+    }
+
+    play_activity_db_close();
+
+    return rom_id;
+}
+
+static bool print_transfer_candidates(const char *rom_path)
+{
+    if (rom_path == NULL || rom_path[0] == '\0')
+        return false;
+
+    RomIdentityContext context;
+    memset(&context, 0, sizeof(context));
+
+    if (!rom_identity_context_build(rom_path, &context))
+        return false;
+
+    /*
+     * path-only and unsupported content cannot safely participate in
+     * content-based transfer matching.
+     */
+    if (context.kind == ROM_IDENTITY_KIND_ARCADE ||
+        context.kind == ROM_IDENTITY_KIND_UNSUPPORTED) {
+        return true;
+    }
+
+    RomContentIdentity identity;
+    int64_t modified_time = 0;
+
+    if (!calculate_content_identity(
+            rom_path,
+            &identity,
+            &modified_time)) {
+        return false;
+    }
+
+    char current_file_path[PATH_MAX] = "";
+    __ensure_rel_path(current_file_path, rom_path);
+
+    play_activity_db_open();
+
+    if (play_activity_db == NULL)
+        return false;
+
+    sqlite3_stmt *statement =
+        play_activity_identity_prepare_candidates(
+            play_activity_db,
+            context.system,
+            &identity,
+            current_file_path
+        );
+
+    if (statement == NULL) {
+        play_activity_db_close();
+        return false;
+    }
+
+    int result;
+
+    while ((result = sqlite3_step(statement)) == SQLITE_ROW) {
+        int rom_id = sqlite3_column_int(statement, 0);
+
+        const unsigned char *stored_path =
+            sqlite3_column_text(statement, 1);
+
+        const unsigned char *display_name =
+            sqlite3_column_text(statement, 2);
+
+        if (stored_path == NULL || display_name == NULL)
+            continue;
+
+        printf(
+            "%d\t%s\t%s\n",
+            rom_id,
+            (const char *)stored_path,
+            (const char *)display_name
+        );
+    }
+
+    sqlite3_finalize(statement);
+    play_activity_db_close();
+
+    return result == SQLITE_DONE;
+}
+
+static bool parse_rom_id(
+    const char *value,
+    int *rom_id_out
+)
+{
+    if (value == NULL ||
+        value[0] == '\0' ||
+        rom_id_out == NULL) {
+        return false;
+    }
+
+    errno = 0;
+
+    char *end = NULL;
+    long parsed = strtol(value, &end, 10);
+
+    if (errno != 0 ||
+        end == value ||
+        *end != '\0' ||
+        parsed < 0 ||
+        parsed > INT_MAX) {
+        return false;
+    }
+
+    *rom_id_out = (int)parsed;
+    return true;
+}
+
+static bool print_transfer_plan(
+    int source_rom_id,
+    const char *destination_rom_path
+)
+{
+    if (source_rom_id < 0 ||
+        destination_rom_path == NULL ||
+        destination_rom_path[0] == '\0') {
+        return false;
+    }
+
+    RomIdentityContext context;
+    memset(&context, 0, sizeof(context));
+
+    if (!rom_identity_context_build(
+            destination_rom_path,
+            &context)) {
+        return false;
+    }
+
+    if (context.kind == ROM_IDENTITY_KIND_ARCADE ||
+        context.kind == ROM_IDENTITY_KIND_UNSUPPORTED) {
+        return false;
+    }
+
+    RomContentIdentity identity;
+    int64_t modified_time = 0;
+
+    if (!calculate_content_identity(
+            destination_rom_path,
+            &identity,
+            &modified_time)) {
+        return false;
+    }
+
+    char destination_file_path[PATH_MAX] = "";
+
+    __ensure_rel_path(
+        destination_file_path,
+        destination_rom_path
+    );
+
+    play_activity_db_open();
+
+    if (play_activity_db == NULL)
+        return false;
+
+    PlayActivityTransferPlan plan;
+
+    bool planned =
+        play_activity_transfer_plan(
+            play_activity_db,
+            source_rom_id,
+            context.system,
+            &identity,
+            destination_file_path,
+            ROMS_FOLDER,
+            HISTORY_PATH,
+            "/mnt/SDCARD/Saves/CurrentProfile/saves",
+            "/mnt/SDCARD/Saves/CurrentProfile/states",
+            &plan
+        );
+
+    play_activity_db_close();
+
+    if (!planned)
+        return false;
+
+    switch (plan.kind) {
+    case PLAY_ACTIVITY_TRANSFER_PLAN_READY:
+        printf("ready\t%s\n", plan.source_core_name);
+        return true;
+
+    case PLAY_ACTIVITY_TRANSFER_PLAN_REPLACE:
+        printf(
+            "replace\t%s\t%d\n",
+            plan.source_core_name,
+            plan.blocked
+        );
+        return true;
+
+    case PLAY_ACTIVITY_TRANSFER_PLAN_ACTIVITY_ONLY:
+        printf("activity-only\n");
+        return true;
+
+    case PLAY_ACTIVITY_TRANSFER_PLAN_INVALID:
+    default:
+        return false;
+    }
+}
+
+static bool perform_transfer(
+    int source_rom_id,
+    const char *destination_rom_path,
+    bool replace_existing
+)
+{
+    if (source_rom_id < 0 ||
+        destination_rom_path == NULL ||
+        destination_rom_path[0] == '\0') {
+        return false;
+    }
+
+    RomIdentityContext context;
+    memset(&context, 0, sizeof(context));
+
+    if (!rom_identity_context_build(
+            destination_rom_path,
+            &context)) {
+        return false;
+    }
+
+    if (context.kind == ROM_IDENTITY_KIND_ARCADE ||
+        context.kind == ROM_IDENTITY_KIND_UNSUPPORTED) {
+        return false;
+    }
+
+    RomContentIdentity identity;
+    int64_t modified_time = 0;
+
+    if (!calculate_content_identity(
+            destination_rom_path,
+            &identity,
+            &modified_time)) {
+        return false;
+    }
+
+    char destination_file_path[PATH_MAX] = "";
+
+    __ensure_rel_path(
+        destination_file_path,
+        destination_rom_path
+    );
+
+    play_activity_db_open();
+
+    if (play_activity_db == NULL)
+        return false;
+
+    bool database_transaction_open = false;
+    bool success = false;
+    bool assets_applied = false;
+
+    PlayActivityAssetTransfer *asset_transfer = NULL;
+
+    if (sqlite3_exec(
+            play_activity_db,
+            "BEGIN IMMEDIATE;",
+            NULL,
+            NULL,
+            NULL) != SQLITE_OK) {
+        goto cleanup;
+    }
+
+    database_transaction_open = true;
+
+    /*
+     * Re-plan while holding the database write lock. This makes the selected
+     * source rom_id authoritative for this transfer rather than trusting
+     * candidate output produced by an earlier invocation.
+     */
+    PlayActivityTransferPlan plan;
+
+    if (!play_activity_transfer_plan(
+            play_activity_db,
+            source_rom_id,
+            context.system,
+            &identity,
+            destination_file_path,
+            ROMS_FOLDER,
+            HISTORY_PATH,
+            "/mnt/SDCARD/Saves/CurrentProfile/saves",
+            "/mnt/SDCARD/Saves/CurrentProfile/states",
+            &plan)) {
+        goto cleanup;
+    }
+
+    if (plan.kind == PLAY_ACTIVITY_TRANSFER_PLAN_REPLACE &&
+        !replace_existing) {
+        fprintf(
+            stderr,
+            "Error: transfer would replace %d existing save/state file(s)\n",
+            plan.blocked
+        );
+        goto cleanup;
+    }
+
+    if (plan.kind !=
+        PLAY_ACTIVITY_TRANSFER_PLAN_ACTIVITY_ONLY) {
+        PlayActivityAssetTransferResult asset_result;
+
+        asset_transfer =
+            play_activity_asset_transfer_prepare(
+                plan.saves_directory,
+                plan.states_directory,
+                plan.source_file_path,
+                destination_file_path,
+                replace_existing,
+                &asset_result
+            );
+
+        if (asset_transfer == NULL) {
+            fprintf(
+                stderr,
+                "Error: unable to prepare save/state transfer\n"
+            );
+            goto cleanup;
+        }
+
+        if (!play_activity_asset_transfer_apply(
+                asset_transfer,
+                &asset_result)) {
+            fprintf(
+                stderr,
+                "Error: unable to rename save/state files\n"
+            );
+            goto cleanup;
+        }
+
+        assets_applied = true;
+    }
+
+    int destination_rom_id =
+        __db_get_rom_id_by_path(destination_rom_path);
+
+    if (destination_rom_id == ROM_NOT_FOUND) {
+        destination_rom_id =
+            create_rom_for_path(destination_rom_path);
+    }
+
+    if (destination_rom_id == ROM_NOT_FOUND ||
+        destination_rom_id == source_rom_id) {
+        goto cleanup;
+    }
+
+    /*
+     * This helper now uses a savepoint, so when called here it participates
+     * in our outer transaction. When called by itself it remains atomic.
+     */
+    if (!play_activity_identity_transfer_roms(
+            play_activity_db,
+            destination_rom_id,
+            source_rom_id,
+            context.system,
+            &identity,
+            modified_time,
+            plan.source_file_path,
+            destination_file_path)) {
+        goto cleanup;
+    }
+
+    if (sqlite3_exec(
+            play_activity_db,
+            "COMMIT;",
+            NULL,
+            NULL,
+            NULL) != SQLITE_OK) {
+        goto cleanup;
+    }
+
+    database_transaction_open = false;
+    success = true;
+
+    if (asset_transfer != NULL)
+        play_activity_asset_transfer_commit(asset_transfer);
+
+cleanup:
+    if (!success && database_transaction_open) {
+        sqlite3_exec(
+            play_activity_db,
+            "ROLLBACK;",
+            NULL,
+            NULL,
+            NULL
+        );
+    }
+
+    if (!success &&
+        assets_applied &&
+        asset_transfer != NULL &&
+        !play_activity_asset_transfer_rollback(
+            asset_transfer)) {
+        fprintf(
+            stderr,
+            "Warning: unable to fully roll back save/state files\n"
+        );
+    }
+
+    play_activity_asset_transfer_free(asset_transfer);
+    play_activity_db_close();
+
+    if (success)
+        printf("transferred\n");
+
+    return success;
+}
+
+static void play_activity_start_with_identity(
+    char *rom_file_path
+)
+{
+    printf_debug(
+        "\n:: play_activity_start_with_identity(%s)\n",
+        rom_file_path
+    );
+
+    int rom_id = resolve_rom_for_start(rom_file_path);
+
+    if (rom_id == ROM_NOT_FOUND)
+        exit(EXIT_FAILURE);
+
+
+    char *sql = sqlite3_mprintf(
+        "INSERT INTO play_activity(rom_id) VALUES(%d);",
+        rom_id
+    );
+
+    play_activity_db_execute(sql);
+    sqlite3_free(sql);
 }
 
 int main(int argc, char *argv[])
@@ -24,13 +803,107 @@ int main(int argc, char *argv[])
         return EXIT_SUCCESS;
     }
 
+    if (!ensure_identity_schema()) {
+        fprintf(stderr, "Error: unable to initialize identity schema\n");
+        return EXIT_FAILURE;
+    }
+
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "start") == 0) {
             if (i + 1 < argc) {
-                play_activity_start(argv[++i]);
+                play_activity_start_with_identity(argv[++i]);
             }
             else {
                 printf("Error: Missing rom_path argument\n");
+                printUsage();
+                return EXIT_FAILURE;
+            }
+        }
+        else if (strcmp(argv[i], "candidates") == 0) {
+            if (i + 1 < argc) {
+                if (!print_transfer_candidates(argv[++i]))
+                    return EXIT_FAILURE;
+            }
+            else {
+                printf("Error: Missing rom_path argument\n");
+                printUsage();
+                return EXIT_FAILURE;
+            }
+        }
+        else if (strcmp(argv[i], "transfer_plan") == 0) {
+            if (i + 2 < argc) {
+                int source_rom_id;
+
+                if (!parse_rom_id(
+                        argv[i + 1],
+                        &source_rom_id)) {
+                    fprintf(
+                        stderr,
+                        "Error: Invalid source_rom_id\n"
+                    );
+                    return EXIT_FAILURE;
+                }
+
+                const char *destination_rom_path =
+                    argv[i + 2];
+
+                i += 2;
+
+                if (!print_transfer_plan(
+                        source_rom_id,
+                        destination_rom_path)) {
+                    return EXIT_FAILURE;
+                }
+            }
+            else {
+                printf(
+                    "Error: Missing source_rom_id or rom_path argument\n"
+                );
+                printUsage();
+                return EXIT_FAILURE;
+            }
+        }
+        else if (strcmp(argv[i], "transfer") == 0) {
+            if (i + 2 < argc) {
+                int source_rom_id;
+
+                if (!parse_rom_id(
+                        argv[i + 1],
+                        &source_rom_id)) {
+                    fprintf(
+                        stderr,
+                        "Error: Invalid source_rom_id\n"
+                    );
+                    return EXIT_FAILURE;
+                }
+
+                const char *destination_rom_path =
+                    argv[i + 2];
+
+                bool replace_existing = false;
+
+                if (i + 3 < argc &&
+                    strcmp(
+                        argv[i + 3],
+                        "--replace"
+                    ) == 0) {
+                    replace_existing = true;
+                    i++;
+                }
+
+                i += 2;
+
+                if (!perform_transfer(
+                        source_rom_id,
+                        destination_rom_path,
+                        replace_existing)) {
+                    return EXIT_FAILURE;
+                }
+            }
+            else {
+                printf(
+                    "Error: Missing source_rom_id or rom_path argument\n"
+                );
                 printUsage();
                 return EXIT_FAILURE;
             }
@@ -40,7 +913,9 @@ int main(int argc, char *argv[])
         }
         else if (strcmp(argv[i], "stop") == 0) {
             if (i + 1 < argc) {
-                play_activity_stop(argv[++i]);
+                char *rom_path = argv[++i];
+
+                play_activity_stop(rom_path);
             }
             else {
                 printf("Error: Missing rom_path argument\n");

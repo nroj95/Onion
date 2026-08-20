@@ -1,0 +1,11 @@
+# ==============================================================================
+# purpose:
+# keep generated play activity test build outputs out of version control.
+#
+# key behavior:
+# - tracks test source and build configuration.
+# - ignores compiled objects and the test executable.
+# ==============================================================================
+
+build/
+playactivity-identity-test
