@@ -82,6 +82,10 @@ typedef struct favourites_manager_settings_s {
     bool repair_box_art;
     bool run_on_startup;
     bool show_system_prefixes;
+    bool clean_replace_underscores;
+    bool clean_remove_number_prefixes;
+    bool clean_remove_parentheses;
+    bool clean_remove_square_brackets;
 } FavouritesManagerSettings;
 
 static FavouritesManagerSettings favourites_manager_settings;
@@ -97,6 +101,10 @@ static void favourites_manager_setDefaults(void)
         .repair_box_art = true,
         .run_on_startup = false,
         .show_system_prefixes = false,
+        .clean_replace_underscores = false,
+        .clean_remove_number_prefixes = false,
+        .clean_remove_parentheses = false,
+        .clean_remove_square_brackets = false,
     };
 
     favourites_custom_system_count = 0;
@@ -144,6 +152,18 @@ static bool favourites_manager_saveSettings(void)
     cJSON_AddBoolToObject(
         root, "show_system_prefixes",
         favourites_manager_settings.show_system_prefixes);
+    cJSON_AddBoolToObject(
+        root, "clean_replace_underscores",
+        favourites_manager_settings.clean_replace_underscores);
+    cJSON_AddBoolToObject(
+        root, "clean_remove_number_prefixes",
+        favourites_manager_settings.clean_remove_number_prefixes);
+    cJSON_AddBoolToObject(
+        root, "clean_remove_parentheses",
+        favourites_manager_settings.clean_remove_parentheses);
+    cJSON_AddBoolToObject(
+        root, "clean_remove_square_brackets",
+        favourites_manager_settings.clean_remove_square_brackets);
 
     cJSON *custom_system_order =
         cJSON_AddArrayToObject(
@@ -259,6 +279,18 @@ static void favourites_manager_loadSettings(void)
     json_getBool(
         root, "show_system_prefixes",
         &favourites_manager_settings.show_system_prefixes);
+    json_getBool(
+        root, "clean_replace_underscores",
+        &favourites_manager_settings.clean_replace_underscores);
+    json_getBool(
+        root, "clean_remove_number_prefixes",
+        &favourites_manager_settings.clean_remove_number_prefixes);
+    json_getBool(
+        root, "clean_remove_parentheses",
+        &favourites_manager_settings.clean_remove_parentheses);
+    json_getBool(
+        root, "clean_remove_square_brackets",
+        &favourites_manager_settings.clean_remove_square_brackets);
 
     bool migrate_system_order = false;
 
@@ -462,6 +494,38 @@ static void action_favouritesManagerRunOnStartup(void *pointer)
 static void action_favouritesManagerSystemPrefixes(void *pointer)
 {
     favourites_manager_settings.show_system_prefixes =
+        ((ListItem *)pointer)->value == 1;
+    favourites_manager_saveSettings();
+}
+
+static void action_favouritesManagerCleanReplaceUnderscores(
+    void *pointer)
+{
+    favourites_manager_settings.clean_replace_underscores =
+        ((ListItem *)pointer)->value == 1;
+    favourites_manager_saveSettings();
+}
+
+static void action_favouritesManagerCleanRemoveNumberPrefixes(
+    void *pointer)
+{
+    favourites_manager_settings.clean_remove_number_prefixes =
+        ((ListItem *)pointer)->value == 1;
+    favourites_manager_saveSettings();
+}
+
+static void action_favouritesManagerCleanRemoveParentheses(
+    void *pointer)
+{
+    favourites_manager_settings.clean_remove_parentheses =
+        ((ListItem *)pointer)->value == 1;
+    favourites_manager_saveSettings();
+}
+
+static void action_favouritesManagerCleanRemoveSquareBrackets(
+    void *pointer)
+{
+    favourites_manager_settings.clean_remove_square_brackets =
         ((ListItem *)pointer)->value == 1;
     favourites_manager_saveSettings();
 }

@@ -836,13 +836,82 @@ void menu_favouritesManagerPriorityNames(void *_)
     header_changed = true;
 }
 
+void menu_favouritesManagerCleanNames(void *_)
+{
+    favourites_manager_ensureSettingsLoaded();
+
+    if (!_menu_favourites_manager_clean_names._created) {
+        _menu_favourites_manager_clean_names =
+            list_createWithTitle(
+                4,
+                LIST_SMALL,
+                "Clean names");
+
+        list_addItemWithInfoNote(
+            &_menu_favourites_manager_clean_names,
+            (ListItem){
+                .label = "Replace underscores",
+                .item_type = TOGGLE,
+                .value =
+                    favourites_manager_settings
+                        .clean_replace_underscores,
+                .action =
+                    action_favouritesManagerCleanReplaceUnderscores},
+            "Replace underscores with spaces.");
+
+        list_addItemWithInfoNote(
+            &_menu_favourites_manager_clean_names,
+            (ListItem){
+                .label = "Remove number prefixes",
+                .item_type = TOGGLE,
+                .value =
+                    favourites_manager_settings
+                        .clean_remove_number_prefixes,
+                .action =
+                    action_favouritesManagerCleanRemoveNumberPrefixes},
+            "Remove leading numeric indexes such as\n"
+            "\"123. Game\" or \"123 - Game\".");
+
+        list_addItemWithInfoNote(
+            &_menu_favourites_manager_clean_names,
+            (ListItem){
+                .label = "Remove parentheses",
+                .item_type = TOGGLE,
+                .value =
+                    favourites_manager_settings
+                        .clean_remove_parentheses,
+                .action =
+                    action_favouritesManagerCleanRemoveParentheses},
+            "Remove text enclosed in parentheses.\n"
+            "Example: (USA).");
+
+        list_addItemWithInfoNote(
+            &_menu_favourites_manager_clean_names,
+            (ListItem){
+                .label = "Remove square brackets",
+                .item_type = TOGGLE,
+                .value =
+                    favourites_manager_settings
+                        .clean_remove_square_brackets,
+                .action =
+                    action_favouritesManagerCleanRemoveSquareBrackets},
+            "Remove text enclosed in square brackets.\n"
+            "Example: [!].");
+    }
+
+    menu_stack[++menu_level] =
+        &_menu_favourites_manager_clean_names;
+
+    header_changed = true;
+}
+
 void menu_favouritesManagerAdvanced(void *_)
 {
     favourites_manager_ensureSettingsLoaded();
 
     if (!_menu_favourites_manager_advanced._created) {
         _menu_favourites_manager_advanced =
-            list_createWithTitle(9, LIST_SMALL, "Advanced");
+            list_createWithTitle(10, LIST_SMALL, "Advanced");
 
         list_addItemWithInfoNote(
             &_menu_favourites_manager_advanced,
@@ -891,6 +960,14 @@ void menu_favouritesManagerAdvanced(void *_)
             "Add short system tags such as [gba].\n"
             "Disable and apply to remove them again.");
 
+        list_addItemWithInfoNote(
+            &_menu_favourites_manager_advanced,
+            (ListItem){
+                .label = "Clean names...",
+                .action =
+                    menu_favouritesManagerCleanNames},
+            "Build names from ROM filenames using\n"
+            "the selected cleanup rules.");
         list_addItemWithInfoNote(
             &_menu_favourites_manager_advanced,
             (ListItem){

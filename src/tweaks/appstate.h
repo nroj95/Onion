@@ -67,6 +67,7 @@ static List _menu_button_action_ingame_menu;
 static List _menu_user_interface;
 static List _menu_favourites_manager;
 static List _menu_favourites_manager_advanced;
+static List _menu_favourites_manager_clean_names;
 static List _menu_favourites_manager_system_order;
 static List _menu_favourites_manager_priority_names;
 static List _menu_theme_overrides;
@@ -92,6 +93,7 @@ void menu_free_all(void)
     list_free(&_menu_user_interface);
     list_free(&_menu_favourites_manager);
     list_free(&_menu_favourites_manager_advanced);
+    list_free(&_menu_favourites_manager_clean_names);
     list_free(&_menu_favourites_manager_system_order);
     list_free(&_menu_favourites_manager_priority_names);
     list_free(&_menu_theme_overrides);

@@ -225,61 +225,215 @@ static const char *favourites_get_system_label(
     return NULL;
 }
 
-static void favourites_strip_system_prefix(
-    char *label,
-    const char *system)
+static bool favourites_name_cleaning_enabled(void)
 {
-    const char *system_label =
-        favourites_get_system_label(system);
+    return
+        favourites_manager_settings.clean_replace_underscores ||
+        favourites_manager_settings.clean_remove_number_prefixes ||
+        favourites_manager_settings.clean_remove_parentheses ||
+        favourites_manager_settings.clean_remove_square_brackets;
+}
 
-    if (system_label == NULL)
+static void favourites_replace_underscores(
+    char label[STR_MAX])
+{
+    for (char *character = label;
+         *character != '\0';
+         character++) {
+        if (*character == '_')
+            *character = ' ';
+    }
+}
+
+static void favourites_remove_number_prefix(
+    char label[STR_MAX])
+{
+    char *separator = label;
+
+    while (isdigit((unsigned char)*separator))
+        separator++;
+
+    if (separator == label)
         return;
 
-    char prefix[STR_MAX];
+    while (isspace((unsigned char)*separator))
+        separator++;
 
-    int prefix_length =
-        snprintf(
-            prefix,
-            sizeof(prefix),
-            "[%s]",
-            system_label);
-
-    if (prefix_length <= 0 ||
-        (size_t)prefix_length >= sizeof(prefix) ||
-        strncasecmp(
-            label,
-            prefix,
-            (size_t)prefix_length) != 0 ||
-        label[prefix_length] == '\0' ||
-        !isspace(
-            (unsigned char)
-                label[prefix_length])) {
+    if (*separator == '.' ||
+        *separator == '-') {
+        separator++;
+    }
+    else {
         return;
     }
 
-    size_t remove_length =
-        (size_t)prefix_length;
+    while (isspace((unsigned char)*separator))
+        separator++;
 
-    while (label[remove_length] != '\0' &&
-           isspace(
-               (unsigned char)
-                   label[remove_length])) {
-        remove_length++;
-    }
-
-    size_t label_length = strlen(label);
+    // Keep a numeric-only name if no title follows the prefix.
+    if (*separator == '\0')
+        return;
 
     memmove(
         label,
-        label + remove_length,
-        label_length - remove_length + 1);
+        separator,
+        strlen(separator) + 1);
 }
 
-static bool favourites_update_system_prefix(
+static void favourites_remove_delimited_sections(
+    char label[STR_MAX],
+    char opening,
+    char closing)
+{
+    char cleaned[STR_MAX];
+    size_t read_index = 0;
+    size_t write_index = 0;
+
+    while (label[read_index] != '\0' &&
+           write_index < sizeof(cleaned) - 1) {
+        if (label[read_index] == opening) {
+            char *closing_ptr =
+                strchr(
+                    label + read_index + 1,
+                    closing);
+
+            // Preserve unmatched delimiters in persistent labels.
+            if (closing_ptr != NULL) {
+                read_index =
+                    (size_t)(closing_ptr - label) + 1;
+
+                // Avoid doubling whitespace around a removed section.
+                if (write_index > 0 &&
+                    isspace(
+                        (unsigned char)cleaned[
+                            write_index - 1])) {
+                    while (isspace(
+                        (unsigned char)label[read_index])) {
+                        read_index++;
+                    }
+                }
+
+                continue;
+            }
+        }
+
+        cleaned[write_index++] =
+            label[read_index++];
+    }
+
+    cleaned[write_index] = '\0';
+
+    char trimmed[STR_MAX];
+
+    str_trim(
+        trimmed,
+        sizeof(trimmed),
+        cleaned,
+        false);
+
+    strcpy(label, trimmed);
+}
+
+static void favourites_clean_label(
+    char label[STR_MAX])
+{
+    if (!favourites_name_cleaning_enabled() ||
+        label[0] == '\0') {
+        return;
+    }
+
+    char original_label[STR_MAX];
+
+    strncpy(
+        original_label,
+        label,
+        sizeof(original_label) - 1);
+
+    original_label[
+        sizeof(original_label) - 1] = '\0';
+
+    if (favourites_manager_settings
+            .clean_replace_underscores) {
+        favourites_replace_underscores(label);
+    }
+
+    if (favourites_manager_settings
+            .clean_remove_number_prefixes) {
+        favourites_remove_number_prefix(label);
+    }
+
+    if (favourites_manager_settings
+            .clean_remove_parentheses) {
+        favourites_remove_delimited_sections(
+            label,
+            '(',
+            ')');
+    }
+
+    if (favourites_manager_settings
+            .clean_remove_square_brackets) {
+        favourites_remove_delimited_sections(
+            label,
+            '[',
+            ']');
+    }
+
+    // Trim whitespace left by enabled transformations.
+    char trimmed_label[STR_MAX];
+
+    str_trim(
+        trimmed_label,
+        sizeof(trimmed_label),
+        label,
+        false);
+
+    strcpy(label, trimmed_label);
+
+    // Never replace a valid favorite with an empty label.
+    if (label[0] == '\0')
+        strcpy(label, original_label);
+}
+
+static bool favourites_set_label_from_rompath(
+    FavouritesEntry *entry)
+{
+    if (entry->resolved_rompath == NULL)
+        return false;
+
+    const char *filename =
+        file_basename(entry->resolved_rompath);
+
+    if (filename == NULL || filename[0] == '\0')
+        return false;
+
+    char *stem =
+        file_removeExtension(filename);
+
+    if (stem == NULL)
+        return false;
+
+    if (stem[0] == '\0') {
+        free(stem);
+        return false;
+    }
+
+    strncpy(
+        entry->label,
+        stem,
+        sizeof(entry->label) - 1);
+
+    entry->label[
+        sizeof(entry->label) - 1] = '\0';
+
+    free(stem);
+    return true;
+}
+
+static bool favourites_update_label(
     FavouritesEntry *entry)
 {
     if (!entry->rom_backed ||
-        entry->system[0] == '\0') {
+        !favourites_set_label_from_rompath(entry)) {
         return false;
     }
 
@@ -293,6 +447,8 @@ static bool favourites_update_system_prefix(
         return false;
     }
 
+    favourites_clean_label(entry->label);
+
     char updated_label[STR_MAX];
 
     if (favourites_manager_settings.show_system_prefixes) {
@@ -300,20 +456,29 @@ static bool favourites_update_system_prefix(
             favourites_get_system_label(
                 entry->system);
 
-        if (system_label == NULL)
-            return false;
+        if (system_label != NULL) {
+            int written =
+                snprintf(
+                    updated_label,
+                    sizeof(updated_label),
+                    "[%s] %s",
+                    system_label,
+                    entry->label);
 
-        int written =
-            snprintf(
+            if (written < 0 ||
+                (size_t)written >=
+                    sizeof(updated_label)) {
+                return false;
+            }
+        }
+        else {
+            strncpy(
                 updated_label,
-                sizeof(updated_label),
-                "[%s] %s",
-                system_label,
-                entry->label);
+                entry->label,
+                sizeof(updated_label) - 1);
 
-        if (written < 0 ||
-            (size_t)written >= sizeof(updated_label)) {
-            return false;
+            updated_label[
+                sizeof(updated_label) - 1] = '\0';
         }
     }
     else {
@@ -619,9 +784,6 @@ static bool favourites_read(
                 entry.resolved_rompath,
                 entry.system);
 
-            favourites_strip_system_prefix(
-                entry.label,
-                entry.system);
         }
 
         if (!favourites_collection_add(
@@ -1086,7 +1248,7 @@ static void favourites_apply_rules(
             result->repaired_images++;
         }
 
-        favourites_update_system_prefix(entry);
+        favourites_update_label(entry);
     }
 
     favourites_sort_mode_active =
