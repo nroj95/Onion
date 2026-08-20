@@ -12,6 +12,8 @@ cd $progdir
 if [ ! -f "${progdir}/bios/scph1001.bin" ]; then  # if no bios installed...
 	if [ -f "/mnt/SDCARD/BIOS/PSXONPSP660.bin" ]; then
 		cp -f "/mnt/SDCARD/BIOS/PSXONPSP660.bin" "${progdir}/bios/scph1001.bin"
+	elif [ -f "/mnt/SDCARD/BIOS/psxonpsp660.bin" ]; then
+		cp -f "/mnt/SDCARD/BIOS/psxonpsp660.bin" "${progdir}/bios/scph1001.bin"
 	elif [ -f "/mnt/SDCARD/BIOS/scph101.bin" ]; then
 		cp -f "/mnt/SDCARD/BIOS/scph101.bin" "${progdir}/bios/scph1001.bin"
 	elif [ -f "/mnt/SDCARD/BIOS/scph7001.bin" ]; then
