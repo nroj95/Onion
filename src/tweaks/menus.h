@@ -20,6 +20,7 @@
 #include "./appstate.h"
 #include "./diags.h"
 #include "./formatters.h"
+#include "./favourites_manager.h"
 #include "./icons.h"
 #include "./network.h"
 #include "./reset.h"
@@ -566,6 +567,513 @@ void menu_blueLight(void *_)
     header_changed = true;
 }
 
+static void formatter_favouritesManagerSystemMove(
+    void *pointer,
+    char *out_label)
+{
+    (void)pointer;
+    strcpy(out_label, " ");
+}
+
+static void action_favouritesManagerMoveSystem(
+    void *pointer)
+{
+    ListItem *item = (ListItem *)pointer;
+    int position = item->_id;
+    int direction = item->value < 1 ? -1 : 1;
+    int destination = position + direction;
+
+    item->value = 1;
+
+    if (destination < 0 ||
+        destination >=
+            _menu_favourites_manager_system_order.item_count) {
+        return;
+    }
+
+    ListItem *other =
+        &_menu_favourites_manager_system_order
+             .items[destination];
+
+    char label[STR_MAX];
+    char payload[STR_MAX];
+
+    strcpy(label, item->label);
+    strcpy(payload, item->payload);
+
+    strcpy(item->label, other->label);
+    strcpy(item->payload, other->payload);
+
+    strcpy(other->label, label);
+    strcpy(other->payload, payload);
+
+    _menu_favourites_manager_system_order.active_pos =
+        destination;
+
+    list_scroll(
+        &_menu_favourites_manager_system_order);
+
+    favourites_custom_system_count =
+        _menu_favourites_manager_system_order.item_count;
+
+    for (int i = 0;
+         i < favourites_custom_system_count;
+         i++) {
+        strncpy(
+            favourites_custom_system_order[i],
+            _menu_favourites_manager_system_order
+                .items[i]
+                .payload,
+            STR_MAX - 1);
+
+        favourites_custom_system_order[i]
+            [STR_MAX - 1] = '\0';
+    }
+
+    favourites_manager_settings.system_order =
+        FAVOURITES_SYSTEM_ORDER_CUSTOM;
+
+    favourites_manager_saveSettings();
+
+    reset_menus = true;
+    all_changed = true;
+}
+
+void menu_favouritesManagerSystemOrder(void *_)
+{
+    char systems[FAVOURITES_MAX_SYSTEMS][STR_MAX];
+    int system_count =
+        favourites_get_systems(systems);
+
+    if (system_count < 0) {
+        __showInfoDialog(
+            "Custom system order",
+            "Could not read the favorites list.");
+        return;
+    }
+
+    if (system_count == 0) {
+        __showInfoDialog(
+            "Custom system order",
+            "No favorite systems are available.");
+        return;
+    }
+
+    list_free(
+        &_menu_favourites_manager_system_order);
+
+    _menu_favourites_manager_system_order =
+        list_createWithTitle(
+            system_count,
+            LIST_SMALL,
+            "Custom system order");
+
+    for (int i = 0;
+         i < system_count;
+         i++) {
+        ListItem *item =
+            list_addItemWithInfoNote(
+                &_menu_favourites_manager_system_order,
+                (ListItem){
+                    .label = "",
+                    .payload = "",
+                    .item_type = MULTIVALUE,
+                    .value = 1,
+                    .value_min = 0,
+                    .value_max = 2,
+                    .value_formatter =
+                        formatter_favouritesManagerSystemMove,
+                    .disable_a_btn = true,
+                    .alternative_arrow_action = true,
+                    .arrow_action =
+                        action_favouritesManagerMoveSystem,
+                },
+                "Use left and right to move this system.");
+
+        strncpy(
+            item->label,
+            systems[i],
+            STR_MAX - 1);
+
+        strncpy(
+            item->payload,
+            systems[i],
+            STR_MAX - 1);
+    }
+
+    menu_stack[++menu_level] =
+        &_menu_favourites_manager_system_order;
+
+    header_changed = true;
+}
+
+static void formatter_favouritesManagerPriorityNameMove(
+    void *pointer,
+    char *out_label)
+{
+    (void)pointer;
+    strcpy(out_label, " ");
+}
+
+static void action_favouritesManagerMovePriorityName(
+    void *pointer)
+{
+    ListItem *item = (ListItem *)pointer;
+    int position = item->_id;
+    int direction = item->value < 1 ? -1 : 1;
+    int destination = position + direction;
+
+    item->value = 1;
+
+    if (destination < 0 ||
+        destination >=
+            _menu_favourites_manager_priority_names.item_count) {
+        return;
+    }
+
+    ListItem *other =
+        &_menu_favourites_manager_priority_names
+             .items[destination];
+
+    char label[STR_MAX];
+    char payload[STR_MAX];
+
+    strcpy(label, item->label);
+    strcpy(payload, item->payload);
+
+    strcpy(item->label, other->label);
+    strcpy(item->payload, other->payload);
+
+    strcpy(other->label, label);
+    strcpy(other->payload, payload);
+
+    _menu_favourites_manager_priority_names.active_pos =
+        destination;
+
+    list_scroll(
+        &_menu_favourites_manager_priority_names);
+
+    favourites_priority_name_count =
+        _menu_favourites_manager_priority_names.item_count;
+
+    for (int i = 0;
+         i < favourites_priority_name_count;
+         i++) {
+        strncpy(
+            favourites_priority_names[i],
+            _menu_favourites_manager_priority_names
+                .items[i]
+                .payload,
+            STR_MAX - 1);
+
+        favourites_priority_names[i]
+            [STR_MAX - 1] = '\0';
+    }
+
+    favourites_manager_settings.sort_mode =
+        FAVOURITES_SORT_PRIORITY_NAMES;
+
+    favourites_manager_saveSettings();
+
+    reset_menus = true;
+    all_changed = true;
+}
+
+void menu_favouritesManagerPriorityNames(void *_)
+{
+    favourites_manager_ensureSettingsLoaded();
+
+    list_free(
+        &_menu_favourites_manager_priority_names);
+
+    _menu_favourites_manager_priority_names =
+        list_createWithTitle(
+            favourites_priority_name_count,
+            LIST_SMALL,
+            "Priority names");
+
+    for (int i = 0;
+         i < favourites_priority_name_count;
+         i++) {
+        ListItem *item =
+            list_addItemWithInfoNote(
+                &_menu_favourites_manager_priority_names,
+                (ListItem){
+                    .label = "",
+                    .payload = "",
+                    .item_type = MULTIVALUE,
+                    .value = 1,
+                    .value_min = 0,
+                    .value_max = 2,
+                    .value_formatter =
+                        formatter_favouritesManagerPriorityNameMove,
+                    .disable_a_btn = true,
+                    .alternative_arrow_action = true,
+                    .arrow_action =
+                        action_favouritesManagerMovePriorityName,
+                },
+                "Use left and right to move this name.");
+
+        strncpy(
+            item->label,
+            favourites_priority_names[i],
+            STR_MAX - 1);
+
+        item->label[STR_MAX - 1] = '\0';
+
+        strncpy(
+            item->payload,
+            favourites_priority_names[i],
+            STR_MAX - 1);
+
+        item->payload[STR_MAX - 1] = '\0';
+    }
+
+    menu_stack[++menu_level] =
+        &_menu_favourites_manager_priority_names;
+
+    header_changed = true;
+}
+
+void menu_favouritesManagerCleanNames(void *_)
+{
+    favourites_manager_ensureSettingsLoaded();
+
+    if (!_menu_favourites_manager_clean_names._created) {
+        _menu_favourites_manager_clean_names =
+            list_createWithTitle(
+                4,
+                LIST_SMALL,
+                "Clean names");
+
+        list_addItemWithInfoNote(
+            &_menu_favourites_manager_clean_names,
+            (ListItem){
+                .label = "Replace underscores",
+                .item_type = TOGGLE,
+                .value =
+                    favourites_manager_settings
+                        .clean_replace_underscores,
+                .action =
+                    action_favouritesManagerCleanReplaceUnderscores},
+            "Replace underscores with spaces.");
+
+        list_addItemWithInfoNote(
+            &_menu_favourites_manager_clean_names,
+            (ListItem){
+                .label = "Remove number prefixes",
+                .item_type = TOGGLE,
+                .value =
+                    favourites_manager_settings
+                        .clean_remove_number_prefixes,
+                .action =
+                    action_favouritesManagerCleanRemoveNumberPrefixes},
+            "Remove leading numeric indexes such as\n"
+            "\"123. Game\" or \"123 - Game\".");
+
+        list_addItemWithInfoNote(
+            &_menu_favourites_manager_clean_names,
+            (ListItem){
+                .label = "Remove parentheses",
+                .item_type = TOGGLE,
+                .value =
+                    favourites_manager_settings
+                        .clean_remove_parentheses,
+                .action =
+                    action_favouritesManagerCleanRemoveParentheses},
+            "Remove text enclosed in parentheses.\n"
+            "Example: (USA).");
+
+        list_addItemWithInfoNote(
+            &_menu_favourites_manager_clean_names,
+            (ListItem){
+                .label = "Remove square brackets",
+                .item_type = TOGGLE,
+                .value =
+                    favourites_manager_settings
+                        .clean_remove_square_brackets,
+                .action =
+                    action_favouritesManagerCleanRemoveSquareBrackets},
+            "Remove text enclosed in square brackets.\n"
+            "Example: [!].");
+    }
+
+    menu_stack[++menu_level] =
+        &_menu_favourites_manager_clean_names;
+
+    header_changed = true;
+}
+
+void menu_favouritesManagerAdvanced(void *_)
+{
+    favourites_manager_ensureSettingsLoaded();
+
+    if (!_menu_favourites_manager_advanced._created) {
+        _menu_favourites_manager_advanced =
+            list_createWithTitle(10, LIST_SMALL, "Advanced");
+
+        list_addItemWithInfoNote(
+            &_menu_favourites_manager_advanced,
+            (ListItem){
+                .label = "System order",
+                .item_type = MULTIVALUE,
+                .value_max = 2,
+                .value_labels = {
+                    "Keep current",
+                    "Alphabetical",
+                    "Custom",
+                },
+                .value =
+                    favourites_manager_settings.system_order,
+                .action =
+                    action_favouritesManagerSystemOrder},
+            "Choose how system groups are ordered.\n"
+            "Games remain alphabetical inside them.");
+
+        list_addItemWithInfoNote(
+            &_menu_favourites_manager_advanced,
+            (ListItem){
+                .label = "Edit system order...",
+                .action = menu_favouritesManagerSystemOrder},
+            "Arrange systems with left and right.\n"
+            "The custom order saves immediately.");
+
+        list_addItemWithInfoNote(
+            &_menu_favourites_manager_advanced,
+            (ListItem){
+                .label = "Edit priority names...",
+                .action =
+                    menu_favouritesManagerPriorityNames},
+            "Arrange priority names with left and right.\n"
+            "The new order saves immediately.");
+
+        list_addItemWithInfoNote(
+            &_menu_favourites_manager_advanced,
+            (ListItem){
+                .label = "Show system prefixes",
+                .item_type = TOGGLE,
+                .value =
+                    favourites_manager_settings.show_system_prefixes,
+                .action =
+                    action_favouritesManagerSystemPrefixes},
+            "Add short system tags such as [gba].\n"
+            "Disable and apply to remove them again.");
+
+        list_addItemWithInfoNote(
+            &_menu_favourites_manager_advanced,
+            (ListItem){
+                .label = "Clean names...",
+                .action =
+                    menu_favouritesManagerCleanNames},
+            "Build names from ROM filenames using\n"
+            "the selected cleanup rules.");
+        list_addItemWithInfoNote(
+            &_menu_favourites_manager_advanced,
+            (ListItem){
+                .label = "Remove duplicates",
+                .item_type = TOGGLE,
+                .value =
+                    favourites_manager_settings.remove_duplicates,
+                .action =
+                    action_favouritesManagerRemoveDuplicates},
+            "Remove repeated entries that point to\n"
+            "the same game.");
+
+        list_addItemWithInfoNote(
+            &_menu_favourites_manager_advanced,
+            (ListItem){
+                .label = "Remove missing games",
+                .item_type = TOGGLE,
+                .value = favourites_manager_settings.remove_missing,
+                .action = action_favouritesManagerRemoveMissing},
+            "Remove favorites whose ROM file no\n"
+            "longer exists.");
+
+        list_addItemWithInfoNote(
+            &_menu_favourites_manager_advanced,
+            (ListItem){
+                .label = "Repair box art",
+                .item_type = TOGGLE,
+                .value = favourites_manager_settings.repair_box_art,
+                .action = action_favouritesManagerRepairBoxArt},
+            "Repair missing or stale image paths.");
+
+        list_addItemWithInfoNote(
+            &_menu_favourites_manager_advanced,
+            (ListItem){
+                .label = "Restore last backup",
+                .action = action_favouritesManagerRestoreBackup},
+            "Restore the favorites list from before\n"
+            "the latest successful apply.");
+
+        list_addItemWithInfoNote(
+            &_menu_favourites_manager_advanced,
+            (ListItem){
+                .label = "Reset settings",
+                .action = action_favouritesManagerReset},
+            "Restore the manager's default settings.\n"
+            "The favorites list is not erased.");
+    }
+
+    menu_stack[++menu_level] =
+        &_menu_favourites_manager_advanced;
+    header_changed = true;
+}
+
+void menu_favouritesManager(void *_)
+{
+    favourites_manager_ensureSettingsLoaded();
+
+    if (!_menu_favourites_manager._created) {
+        _menu_favourites_manager =
+            list_createWithTitle(4, LIST_SMALL, "Favorites manager");
+
+        list_addItemWithInfoNote(
+            &_menu_favourites_manager,
+            (ListItem){
+                .label = "Sort mode",
+                .item_type = MULTIVALUE,
+                .value_max = 2,
+                .value_labels = {
+                    "Alphabetical",
+                    "By system",
+                    "Priority names",
+                },
+                .value = favourites_manager_settings.sort_mode,
+                .action = action_favouritesManagerSortMode},
+            "Choose the overall favorites order.");
+
+        list_addItemWithInfoNote(
+            &_menu_favourites_manager,
+            (ListItem){
+                .label = "Run on startup",
+                .item_type = TOGGLE,
+                .value = favourites_manager_settings.run_on_startup,
+                .action = action_favouritesManagerRunOnStartup},
+            "Automatically apply the configured rules\n"
+            "during Onion startup.");
+
+        list_addItemWithInfoNote(
+            &_menu_favourites_manager,
+            (ListItem){
+                .label = "Apply changes",
+                .action = action_favouritesManagerApply},
+            "Apply the configured sorting and cleanup\n"
+            "rules to the favorites list.");
+
+        list_addItemWithInfoNote(
+            &_menu_favourites_manager,
+            (ListItem){
+                .label = "Advanced...",
+                .action = menu_favouritesManagerAdvanced},
+            "Configure cleanup rules, restore a backup,\n"
+            "or reset the manager settings.");
+    }
+
+    menu_stack[++menu_level] = &_menu_favourites_manager;
+    header_changed = true;
+}
+
 void menu_userInterface(void *_)
 {
     settings.blue_light_state = config_flag_get(".blfOn");
@@ -880,8 +1388,15 @@ void menu_tools_m3uGenerator(void *_)
 void menu_tools(void *_)
 {
     if (!_menu_tools._created) {
-        _menu_tools = list_create(NUM_TOOLS, LIST_SMALL);
+        _menu_tools = list_create(NUM_TOOLS + 1, LIST_SMALL);
         strcpy(_menu_tools.title, "Tools");
+
+        list_addItemWithInfoNote(
+            &_menu_tools,
+            (ListItem){
+                .label = "Favorites manager...",
+                .action = menu_favouritesManager},
+            "Sort, organize, and clean the favorites list.");
         list_addItemWithInfoNote(&_menu_tools,
                                  (ListItem){
                                      .label = "Generate CUE files for BIN games",

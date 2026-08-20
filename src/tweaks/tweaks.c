@@ -62,11 +62,23 @@ int main(int argc, char *argv[])
     getDeviceModel();
 
     char apply_tool[STR_MAX] = "";
+    bool process_favorites = false;
     bool use_display = true;
 
     for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--apply_tool") == 0)
-            strncpy(apply_tool, argv[++i], STR_MAX - 1);
+        if (strcmp(argv[i], "--apply_tool") == 0 &&
+            i + 1 < argc) {
+            strncpy(
+                apply_tool,
+                argv[++i],
+                STR_MAX - 1);
+        }
+        else if (strcmp(
+                     argv[i],
+                     "--process_favorites") == 0) {
+            process_favorites = true;
+            use_display = false;
+        }
         else if (strcmp(argv[i], "--no_display") == 0)
             use_display = false;
     }
@@ -74,12 +86,17 @@ int main(int argc, char *argv[])
     signal(SIGINT, sigHandler);
     signal(SIGTERM, sigHandler);
 
-    if (use_display || strlen(apply_tool) == 0)
+    if (use_display ||
+        (strlen(apply_tool) == 0 && !process_favorites)) {
         SDL_InitDefault();
+    }
 
     settings_load();
 
     lang_load();
+
+    if (process_favorites)
+        return favourites_manager_processStartup();
 
     // Apply tool via command line
     if (strlen(apply_tool) > 0) {
